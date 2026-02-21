@@ -79,6 +79,95 @@ go run main.go \
 
 Then launch others in separate terminals with appropriate `-id` and `-port` values.
 
+### Geo-Distributed Setup (Public IPs)
+
+Deploy across multiple regions for testing adaptive timeout under real latency conditions:
+
+| Node   | Region         | Public IP       |
+| ------ | -------------- | --------------- |
+| node-1 | us-east-1      | 3.88.170.115    |
+| node-2 | ap-southeast-3 | 108.136.225.193 |
+| node-3 | ap-southeast-1 | 18.142.47.197   |
+| node-4 | eu-central-1   | 3.66.155.203    |
+| node-5 | ca-central-1   | 35.183.136.44   |
+
+#### Launch Node 1 (us-east-1)
+
+```bash
+./adaptive-raft \
+  -id 1 \
+  -port 9001 \
+  -peers "2=108.136.225.193:9001,3=18.142.47.197:9001,4=3.66.155.203:9001,5=35.183.136.44:9001" \
+  -baseline-rtt 50ms \
+  -t-base 1s \
+  -t-min 500ms \
+  -t-max 5s \
+  -kp 1.5 \
+  -ki 0.2
+```
+
+#### Launch Node 2 (ap-southeast-3)
+
+```bash
+./adaptive-raft \
+  -id 2 \
+  -port 9001 \
+  -peers "1=3.88.170.115:9001,3=18.142.47.197:9001,4=3.66.155.203:9001,5=35.183.136.44:9001" \
+  -baseline-rtt 50ms \
+  -t-base 1s \
+  -t-min 500ms \
+  -t-max 5s \
+  -kp 1.5 \
+  -ki 0.2
+```
+
+#### Launch Node 3 (ap-southeast-1)
+
+```bash
+./adaptive-raft \
+  -id 3 \
+  -port 9001 \
+  -peers "1=3.88.170.115:9001,2=108.136.225.193:9001,4=3.66.155.203:9001,5=35.183.136.44:9001" \
+  -baseline-rtt 50ms \
+  -t-base 1s \
+  -t-min 500ms \
+  -t-max 5s \
+  -kp 1.5 \
+  -ki 0.2
+```
+
+#### Launch Node 4 (eu-central-1)
+
+```bash
+./adaptive-raft \
+  -id 4 \
+  -port 9001 \
+  -peers "1=3.88.170.115:9001,2=108.136.225.193:9001,3=18.142.47.197:9001,5=35.183.136.44:9001" \
+  -baseline-rtt 50ms \
+  -t-base 1s \
+  -t-min 500ms \
+  -t-max 5s \
+  -kp 1.5 \
+  -ki 0.2
+```
+
+#### Launch Node 5 (ca-central-1)
+
+```bash
+./adaptive-raft \
+  -id 5 \
+  -port 9001 \
+  -peers "1=3.88.170.115:9001,2=108.136.225.193:9001,3=18.142.47.197:9001,4=3.66.155.203:9001" \
+  -baseline-rtt 50ms \
+  -t-base 1s \
+  -t-min 500ms \
+  -t-max 5s \
+  -kp 1.5 \
+  -ki 0.2
+```
+
+**Note:** Each node uses the same port `9001` on its instance. The baseline RTT, gains, and bounds are tuned for cross-region latency (50-200ms typical). Adjust `-baseline-rtt` based on actual observed inter-region latency.
+
 ## Configuration
 
 ### Flags
