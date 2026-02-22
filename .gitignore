@@ -32,6 +32,7 @@ go.work
 
 # Logs
 *.log
+logs/
 
 # Temporary files
 *.tmp

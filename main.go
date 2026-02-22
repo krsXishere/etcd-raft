@@ -86,7 +86,19 @@ func main() {
 		HeartbeatRatio: ratio,
 	}
 
-	observer := metrics.NewLogObserver(id)
+	// Log to console (stdout).
+	logObs := metrics.NewLogObserver(id)
+
+	// Log to file: logs/node<id>_<timestamp>.log
+	fileObs, err := metrics.NewFileObserver(id, "logs")
+	if err != nil {
+		log.Fatalf("failed to create file observer: %v", err)
+	}
+	defer fileObs.Close()
+	log.Printf("[main] metrics log file: %s", fileObs.FilePath())
+
+	// Combine both observers so every metric goes to console + file.
+	observer := metrics.NewMultiObserver(logObs, fileObs)
 
 	nodeCfg := raft.Config{
 		ID:            id,
