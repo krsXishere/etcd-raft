@@ -86,7 +86,7 @@ Deploy across multiple regions for testing adaptive timeout under real latency c
 | Node   | Region         | Public IP       |
 | ------ | -------------- | --------------- |
 | node-1 | us-east-1      | 3.88.170.115    |
-| node-2 | ap-southeast-3 | 108.136.225.193 |
+| node-2 | ap-southeast-3 | 52.53.252.250 |
 | node-3 | ap-southeast-1 | 18.142.47.197   |
 | node-4 | eu-central-1   | 3.66.155.203    |
 | node-5 | ca-central-1   | 35.183.136.44   |
@@ -97,7 +97,7 @@ Deploy across multiple regions for testing adaptive timeout under real latency c
 ./adaptive-raft \
   -id 1 \
   -port 9001 \
-  -peers "2=108.136.225.193:9001,3=18.142.47.197:9001,4=3.66.155.203:9001,5=35.183.136.44:9001" \
+  -peers "2=52.53.252.250:9001,3=18.142.47.197:9001,4=3.66.155.203:9001,5=35.183.136.44:9001" \
   -baseline-rtt 50ms \
   -t-base 1s \
   -t-min 500ms \
@@ -127,7 +127,7 @@ Deploy across multiple regions for testing adaptive timeout under real latency c
 ./adaptive-raft \
   -id 3 \
   -port 9001 \
-  -peers "1=3.88.170.115:9001,2=108.136.225.193:9001,4=3.66.155.203:9001,5=35.183.136.44:9001" \
+  -peers "1=3.88.170.115:9001,2=52.53.252.250:9001,4=3.66.155.203:9001,5=35.183.136.44:9001" \
   -baseline-rtt 50ms \
   -t-base 1s \
   -t-min 500ms \
@@ -142,7 +142,7 @@ Deploy across multiple regions for testing adaptive timeout under real latency c
 ./adaptive-raft \
   -id 4 \
   -port 9001 \
-  -peers "1=3.88.170.115:9001,2=108.136.225.193:9001,3=18.142.47.197:9001,5=35.183.136.44:9001" \
+  -peers "1=3.88.170.115:9001,2=52.53.252.250:9001,3=18.142.47.197:9001,5=35.183.136.44:9001" \
   -baseline-rtt 50ms \
   -t-base 1s \
   -t-min 500ms \
@@ -157,7 +157,7 @@ Deploy across multiple regions for testing adaptive timeout under real latency c
 ./adaptive-raft \
   -id 5 \
   -port 9001 \
-  -peers "1=3.88.170.115:9001,2=108.136.225.193:9001,3=18.142.47.197:9001,4=3.66.155.203:9001" \
+  -peers "1=3.88.170.115:9001,2=52.53.252.250:9001,3=18.142.47.197:9001,4=3.66.155.203:9001" \
   -baseline-rtt 50ms \
   -t-base 1s \
   -t-min 500ms \

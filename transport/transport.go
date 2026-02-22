@@ -89,10 +89,15 @@ func New(nodeID uint64, listenAddr string, peers map[uint64]string) *Transport {
 		addr:   listenAddr,
 		peers:  peers,
 		client: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   5 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
 				MaxIdleConnsPerHost: 4,
 				IdleConnTimeout:     60 * time.Second,
+				TLSHandshakeTimeout: 5 * time.Second,
 			},
 		},
 	}

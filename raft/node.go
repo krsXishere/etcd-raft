@@ -79,7 +79,8 @@ type Node struct {
 	matchIndex map[uint64]uint64
 
 	// Election bookkeeping
-	votesReceived map[uint64]bool
+	votesReceived    map[uint64]bool
+	electionFailures int // consecutive failed elections (for backoff)
 
 	// Adaptive controller + metrics
 	ctrl     *controller.PIController
@@ -170,7 +171,20 @@ func (n *Node) electionTimeout() time.Duration {
 	base := n.ctrl.GetElectionTimeout()
 	// Add jitter: [base, base*1.5)
 	jitter := time.Duration(rand.Int63n(int64(base / 2)))
-	return base + jitter
+	timeout := base + jitter
+
+	// Exponential backoff on consecutive election failures.
+	// Prevents rapid term inflation when peers are unreachable.
+	if n.electionFailures > 0 {
+		backoff := time.Duration(1<<min(n.electionFailures, 5)) * timeout / 2
+		timeout += backoff
+		// Cap at T_max.
+		tMax := n.ctrl.Config().TMax
+		if timeout > tMax {
+			timeout = tMax
+		}
+	}
+	return timeout
 }
 
 func (n *Node) resetElectionTimer() {
@@ -252,7 +266,7 @@ func (n *Node) startElection() {
 	n.votesReceived = map[uint64]bool{n.id: true}
 
 	n.observer.RecordRoleChange(metrics.RoleCandidate, n.currentTerm)
-	log.Printf("[raft] node=%d starting election term=%d", n.id, n.currentTerm)
+	log.Printf("[raft] node=%d starting election term=%d (failures=%d)", n.id, n.currentTerm, n.electionFailures)
 
 	lastIdx, lastTerm := n.lastLogInfo()
 
@@ -281,6 +295,12 @@ func (n *Node) startElection() {
 	// Check if we already won (replies processed in handleMessage).
 	n.checkElectionWon()
 
+	// Track consecutive failures for backoff.
+	if n.role == Candidate {
+		// Still candidate = didn't win. Increment failure count.
+		n.electionFailures++
+	}
+
 	// Reset election timer regardless.
 	n.resetElectionTimer()
 }
@@ -303,6 +323,7 @@ func (n *Node) checkElectionWon() {
 
 func (n *Node) becomeLeader() {
 	n.role = Leader
+	n.electionFailures = 0
 	n.observer.RecordRoleChange(metrics.RoleLeader, n.currentTerm)
 	log.Printf("[raft] node=%d became leader term=%d", n.id, n.currentTerm)
 
@@ -327,6 +348,7 @@ func (n *Node) becomeFollower(term uint64) {
 	n.role = Follower
 	n.currentTerm = term
 	n.votedFor = 0
+	n.electionFailures = 0
 	n.resetElectionTimer()
 }
 
