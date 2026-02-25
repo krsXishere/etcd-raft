@@ -222,6 +222,7 @@ func (n *Node) resetHeartbeatTimer() {
 // --------------------------------------------------------------------
 
 func (n *Node) tickerLoop() {
+
 	defer n.wg.Done()
 
 	for {
