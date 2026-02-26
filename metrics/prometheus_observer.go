@@ -41,7 +41,14 @@ var (
 	controllerErrorGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "raft",
 		Name:      "controller_error_milliseconds",
-		Help:      "PI controller error (RTT - baseline) in milliseconds",
+		Help:      "PID controller error (RTT - baseline) in milliseconds",
+	}, []string{"node_id"})
+
+	// Controller derivative (rate of error change)
+	controllerDerivativeGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "raft",
+		Name:      "controller_derivative",
+		Help:      "PID controller derivative term (dError/dt in seconds per second)",
 	}, []string{"node_id"})
 
 	// Election timeout - key adaptive parameter
@@ -142,6 +149,9 @@ func (p *PrometheusObserver) RecordControllerOutput(s ControllerSnapshot) {
 	rttAvgGauge.WithLabelValues(p.nodeLabel).Set(float64(s.CurrentRTT.Milliseconds()))
 	baselineRTTGauge.WithLabelValues(p.nodeLabel).Set(float64(s.BaselineRTT.Milliseconds()))
 	controllerErrorGauge.WithLabelValues(p.nodeLabel).Set(float64(s.Error.Milliseconds()))
+
+	// Derivative term
+	controllerDerivativeGauge.WithLabelValues(p.nodeLabel).Set(s.Derivative)
 
 	// Timing parameters
 	electionTimeoutGauge.WithLabelValues(p.nodeLabel).Set(float64(s.ElectionTimeout.Milliseconds()))

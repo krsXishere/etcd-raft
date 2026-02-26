@@ -1,4 +1,4 @@
-// Adaptive Raft – 5-node cluster with PI-controlled election timeout.
+// Adaptive Raft – 5-node cluster with PID-controlled election timeout.
 //
 // Usage:
 //
@@ -36,6 +36,7 @@ func main() {
 		tMax        time.Duration
 		kp          float64
 		ki          float64
+		kd          float64
 		ratio       float64
 		rttWindow   int
 		metricsPort int = 9200 // Port untuk Prometheus metrics endpoint
@@ -51,6 +52,7 @@ func main() {
 	flag.DurationVar(&tMax, "t-max", 3*time.Second, "Maximum election timeout")
 	flag.Float64Var(&kp, "kp", 2.0, "Proportional gain")
 	flag.Float64Var(&ki, "ki", 0.5, "Integral gain")
+	flag.Float64Var(&kd, "kd", 0.1, "Derivative gain")
 	flag.Float64Var(&ratio, "ratio", 5.0, "Heartbeat ratio (electionTimeout / R)")
 	flag.IntVar(&rttWindow, "rtt-window", 20, "RTT sliding window size")
 
@@ -93,6 +95,7 @@ func main() {
 		BaselineRTT:    baselineRTT,
 		Kp:             kp,
 		Ki:             ki,
+		Kd:             kd,
 		TBase:          tBase,
 		TMin:           tMin,
 		TMax:           tMax,

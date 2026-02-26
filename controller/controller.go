@@ -1,10 +1,11 @@
-// Package controller implements a Proportional-Integral (PI) controller
-// that adaptively tunes the Raft election timeout based on observed RTT.
+// Package controller implements a Proportional-Integral-Derivative (PID)
+// controller that adaptively tunes the Raft election timeout based on
+// observed RTT.
 //
 // Control law:
 //
 //	error        = observedRTT − baselineRTT
-//	rawOutput    = T_base + Kp·error + Ki·∫error
+//	rawOutput    = T_base + Kp·error + Ki·∫error + Kd·(Δerror/Δt)
 //	electionTimeout = clamp(rawOutput, T_min, T_max)
 //
 // Integral windup is prevented with back-calculation clamping: whenever
@@ -12,6 +13,10 @@
 // so that the output sits exactly at the violated bound.  This keeps the
 // integrator from accumulating error that it can never "unwind", which
 // would otherwise cause sluggish recovery when RTT returns to normal.
+//
+// The derivative term is computed as (error − prevError) / Δt and is
+// optionally smoothed with a low-pass filter (alpha = 0.3) to avoid
+// amplifying high-frequency measurement noise.
 package controller
 
 import (
@@ -19,7 +24,7 @@ import (
 	"time"
 )
 
-// Config holds the tuning knobs for the PI controller.
+// Config holds the tuning knobs for the PID controller.
 type Config struct {
 	// BaselineRTT is the expected "normal" round-trip time.
 	BaselineRTT time.Duration
@@ -29,6 +34,9 @@ type Config struct {
 
 	// Ki is the integral gain.
 	Ki float64
+
+	// Kd is the derivative gain.
+	Kd float64
 
 	// TBase is the base election timeout before any correction.
 	TBase time.Duration
@@ -47,6 +55,7 @@ func DefaultConfig() Config {
 		BaselineRTT:    5 * time.Millisecond,
 		Kp:             2.0,
 		Ki:             0.5,
+		Kd:             0.1,
 		TBase:          300 * time.Millisecond,
 		TMin:           150 * time.Millisecond,
 		TMax:           3000 * time.Millisecond,
@@ -54,7 +63,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// PIController is a lightweight PI controller that outputs an election
+// PIController is a lightweight PID controller that outputs an election
 // timeout value based on observed RTT error.
 type PIController struct {
 	mu sync.RWMutex
@@ -62,6 +71,12 @@ type PIController struct {
 	cfg      Config
 	integral float64 // accumulated error (seconds)
 	lastErr  float64 // most recent error (seconds), for observability
+	prevErr  float64 // previous error for derivative calculation (seconds)
+
+	// Derivative state
+	filteredDeriv float64   // low-pass filtered derivative (seconds/second)
+	lastUpdate    time.Time // timestamp of previous Update call
+	firstUpdate   bool      // true until the second call to Update
 
 	electionTimeout   time.Duration
 	heartbeatInterval time.Duration
@@ -70,21 +85,26 @@ type PIController struct {
 // New creates a PIController with the given configuration.
 // The initial output is T_base with a zero integral.
 func New(cfg Config) *PIController {
-	pi := &PIController{cfg: cfg}
+	pi := &PIController{
+		cfg:         cfg,
+		firstUpdate: true,
+	}
 	pi.electionTimeout = cfg.TBase
 	pi.heartbeatInterval = deriveHeartbeat(cfg.TBase, cfg.HeartbeatRatio)
 	return pi
 }
 
 // Update accepts a new RTT observation, computes the error relative to
-// the configured baseline, updates the integral term, and produces a
-// clamped election timeout.
+// the configured baseline, updates the integral and derivative terms,
+// and produces a clamped election timeout.
 //
 // Internally all arithmetic is in float64 seconds; the public result is
 // returned (and stored) as time.Duration.
 func (pi *PIController) Update(observedRTT time.Duration) {
 	pi.mu.Lock()
 	defer pi.mu.Unlock()
+
+	now := time.Now()
 
 	// ── 1. Compute error ────────────────────────────────────────────
 	errSec := (observedRTT - pi.cfg.BaselineRTT).Seconds()
@@ -93,12 +113,30 @@ func (pi *PIController) Update(observedRTT time.Duration) {
 	// ── 2. Tentatively accumulate integral ──────────────────────────
 	candidate := pi.integral + errSec
 
-	// ── 3. Compute raw (unclamped) PI output ────────────────────────
+	// ── 3. Compute derivative term ─────────────────────────────────
+	var dTerm float64
+	if pi.firstUpdate {
+		// No previous sample: derivative is zero on the first call.
+		pi.firstUpdate = false
+	} else {
+		dt := now.Sub(pi.lastUpdate).Seconds()
+		if dt > 0 {
+			rawDeriv := (errSec - pi.prevErr) / dt
+			// Low-pass filter (α = 0.3) to suppress measurement noise.
+			const alpha = 0.3
+			pi.filteredDeriv = alpha*rawDeriv + (1-alpha)*pi.filteredDeriv
+			dTerm = pi.cfg.Kd * pi.filteredDeriv
+		}
+	}
+	pi.prevErr = errSec
+	pi.lastUpdate = now
+
+	// ── 4. Compute raw (unclamped) PID output ───────────────────────
 	pTerm := pi.cfg.Kp * errSec
 	iTerm := pi.cfg.Ki * candidate
-	raw := pi.cfg.TBase.Seconds() + pTerm + iTerm
+	raw := pi.cfg.TBase.Seconds() + pTerm + iTerm + dTerm
 
-	// ── 4. Clamp output to [TMin, TMax] ─────────────────────────────
+	// ── 5. Clamp output to [TMin, TMax] ─────────────────────────────
 	tMin := pi.cfg.TMin.Seconds()
 	tMax := pi.cfg.TMax.Seconds()
 
@@ -110,29 +148,33 @@ func (pi *PIController) Update(observedRTT time.Duration) {
 		clamped = tMax
 	}
 
-	// ── 5. Anti-windup via back-calculation ─────────────────────────
+	// ── 6. Anti-windup via back-calculation ─────────────────────────
 	// If the output was clamped and Ki != 0, solve for the integral
 	// value that would place the output exactly at the bound:
-	//    bound = TBase + Kp·e + Ki·integral  →  integral = (bound − TBase − Kp·e) / Ki
+	//    bound = TBase + Kp·e + Ki·integral + Kd·d
+	//    →  integral = (bound − TBase − Kp·e − Kd·d) / Ki
 	// This prevents the integrator from winding up while the output
 	// is saturated.
 	if raw != clamped && pi.cfg.Ki != 0 {
-		pi.integral = (clamped - pi.cfg.TBase.Seconds() - pTerm) / pi.cfg.Ki
+		pi.integral = (clamped - pi.cfg.TBase.Seconds() - pTerm - dTerm) / pi.cfg.Ki
 	} else {
 		pi.integral = candidate
 	}
 
-	// ── 6. Store results ────────────────────────────────────────────
+	// ── 7. Store results ────────────────────────────────────────────
 	pi.electionTimeout = secToDuration(clamped)
 	pi.heartbeatInterval = deriveHeartbeat(pi.electionTimeout, pi.cfg.HeartbeatRatio)
 }
 
-// Reset clears the integral term and reverts to base values.
+// Reset clears the integral and derivative terms and reverts to base values.
 func (pi *PIController) Reset() {
 	pi.mu.Lock()
 	defer pi.mu.Unlock()
 	pi.integral = 0
 	pi.lastErr = 0
+	pi.prevErr = 0
+	pi.filteredDeriv = 0
+	pi.firstUpdate = true
 	pi.electionTimeout = pi.cfg.TBase
 	pi.heartbeatInterval = deriveHeartbeat(pi.cfg.TBase, pi.cfg.HeartbeatRatio)
 }
@@ -158,6 +200,14 @@ func (pi *PIController) GetLastError() time.Duration {
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
 	return secToDuration(pi.lastErr)
+}
+
+// GetDerivative returns the most recent filtered derivative value
+// (dError/dt in seconds per second), useful for logging / metrics.
+func (pi *PIController) GetDerivative() float64 {
+	pi.mu.RLock()
+	defer pi.mu.RUnlock()
+	return pi.filteredDeriv
 }
 
 // Config returns a copy of the controller's configuration.

@@ -64,10 +64,11 @@ func (o *FileObserver) RecordRTT(peerID uint64, rtt time.Duration) {
 func (o *FileObserver) RecordControllerOutput(s ControllerSnapshot) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	fmt.Fprintf(o.file, "%s [node=%d] controller role=%s term=%d rtt=%s baseline=%s err=%s electionTimeout=%s heartbeat=%s\n",
+	fmt.Fprintf(o.file, "%s [node=%d] controller role=%s term=%d rtt=%s baseline=%s err=%s dErr=%.6f electionTimeout=%s heartbeat=%s\n",
 		time.Now().Format("2006/01/02 15:04:05.000000"),
 		s.NodeID, s.Role, s.Term,
 		s.CurrentRTT, s.BaselineRTT, s.Error,
+		s.Derivative,
 		s.ElectionTimeout, s.HeartbeatInterval,
 	)
 }

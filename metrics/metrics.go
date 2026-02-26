@@ -25,14 +25,14 @@ type Observer interface {
 	// RecordRTT is called whenever a new RTT sample is obtained from a peer.
 	RecordRTT(peerID uint64, rtt time.Duration)
 
-	// RecordControllerOutput is called after every PI controller update.
+	// RecordControllerOutput is called after every PID controller update.
 	RecordControllerOutput(snapshot ControllerSnapshot)
 
 	// RecordRoleChange is called when the node's Raft role changes.
 	RecordRoleChange(role RaftRole, term uint64)
 }
 
-// ControllerSnapshot holds all the values the PI controller computed during
+// ControllerSnapshot holds all the values the PID controller computed during
 // a single update cycle.  Structured so it maps cleanly to OTel attributes.
 type ControllerSnapshot struct {
 	Timestamp         time.Time
@@ -41,6 +41,7 @@ type ControllerSnapshot struct {
 	CurrentRTT        time.Duration
 	BaselineRTT       time.Duration
 	Error             time.Duration
+	Derivative        float64 // dError/dt (seconds per second)
 	ElectionTimeout   time.Duration
 	HeartbeatInterval time.Duration
 	Term              uint64
@@ -70,9 +71,10 @@ func (o *LogObserver) RecordRTT(peerID uint64, rtt time.Duration) {
 func (o *LogObserver) RecordControllerOutput(s ControllerSnapshot) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	log.Printf("[node=%d] controller role=%s term=%d rtt=%s baseline=%s err=%s electionTimeout=%s heartbeat=%s",
+	log.Printf("[node=%d] controller role=%s term=%d rtt=%s baseline=%s err=%s dErr=%.6f electionTimeout=%s heartbeat=%s",
 		s.NodeID, s.Role, s.Term,
 		s.CurrentRTT, s.BaselineRTT, s.Error,
+		s.Derivative,
 		s.ElectionTimeout, s.HeartbeatInterval,
 	)
 }

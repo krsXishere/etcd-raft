@@ -1,5 +1,5 @@
 // Package raft implements a simplified Raft consensus node with adaptive
-// election timeout driven by a PI controller.
+// election timeout driven by a PID controller.
 //
 // Intentionally simplified: single-entry AppendEntries, in-memory log,
 // no snapshots, no cluster membership changes.  The focus is on
@@ -587,6 +587,7 @@ func (n *Node) recordRTT(peerID uint64, rtt time.Duration) {
 		CurrentRTT:        avgRTT,
 		BaselineRTT:       n.ctrl.Config().BaselineRTT,
 		Error:             avgRTT - n.ctrl.Config().BaselineRTT,
+		Derivative:        n.ctrl.GetDerivative(),
 		ElectionTimeout:   n.ctrl.GetElectionTimeout(),
 		HeartbeatInterval: n.ctrl.GetHeartbeatInterval(),
 		Term:              n.currentTerm,
