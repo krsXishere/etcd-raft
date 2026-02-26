@@ -38,13 +38,13 @@ func main() {
 		ki          float64
 		ratio       float64
 		rttWindow   int
-		metricsPort int = 9100 // Port untuk Prometheus metrics endpoint
+		metricsPort int = 9200 // Port untuk Prometheus metrics endpoint
 	)
 
 	flag.Uint64Var(&id, "id", 0, "Unique node ID (1-5)")
 	flag.IntVar(&port, "port", 0, "Listen port for this node")
 	flag.StringVar(&peersFlag, "peers", "", "Comma-separated peer list: id=host:port,...")
-	flag.IntVar(&metricsPort, "metric-port", 9100, "Port for Prometheus metrics endpoint")
+	flag.IntVar(&metricsPort, "metric-port", 9200, "Port for Prometheus metrics endpoint")
 	flag.DurationVar(&baselineRTT, "baseline-rtt", 5*time.Millisecond, "Expected baseline RTT")
 	flag.DurationVar(&tBase, "t-base", 300*time.Millisecond, "Base election timeout")
 	flag.DurationVar(&tMin, "t-min", 150*time.Millisecond, "Minimum election timeout")
@@ -108,10 +108,13 @@ func main() {
 		log.Fatalf("failed to create file observer: %v", err)
 	}
 	defer fileObs.Close()
-	log.Printf("[mAin] metrics log file: %s", fileObs.FilePath())
+	log.Printf("[main] metrics log file: %s", fileObs.FilePath())
 
-	// Combine both observers so every metric goes to console + file.
-	observer := metrics.NewMultiObserver(logObs, fileObs)
+	// Prometheus observer for Grafana/Prometheus monitoring.
+	promObs := metrics.NewPrometheusObserver(id)
+
+	// Combine all observers so every metric goes to console + file + Prometheus.
+	observer := metrics.NewMultiObserver(logObs, fileObs, promObs)
 
 	nodeCfg := raft.Config{
 		ID:            id,
