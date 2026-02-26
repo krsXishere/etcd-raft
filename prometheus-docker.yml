@@ -1,0 +1,28 @@
+# prometheus-docker.yml – Prometheus configuration for Docker Compose deployment
+#
+# Scrapes all 5 raft nodes on their metrics port (9200 inside Docker network).
+
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  # Monitor Prometheus itself
+  - job_name: "prometheus"
+    static_configs:
+      - targets:
+          - "localhost:9090"
+
+  # Monitor all Raft nodes (metrics + API port)
+  - job_name: "raft-cluster"
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "node1:9200"
+          - "node2:9200"
+          - "node3:9200"
+          - "node4:9200"
+          - "node5:9200"
+        labels:
+          cluster: "adaptive-raft"
+          environment: "docker-emulation"

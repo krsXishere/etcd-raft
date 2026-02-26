@@ -7,6 +7,7 @@
 package raft
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -82,6 +83,13 @@ type Node struct {
 	votesReceived    map[uint64]bool
 	electionFailures int // consecutive failed elections (for backoff)
 
+	// Leader tracking
+	leaderID      uint64
+	electionStart time.Time
+
+	// Proposal tracking
+	pendingProposals map[uint64]chan error
+
 	// Adaptive controller + metrics
 	ctrl     *controller.PIController
 	observer metrics.Observer
@@ -120,19 +128,20 @@ func NewNode(cfg Config) *Node {
 	}
 
 	n := &Node{
-		id:          cfg.ID,
-		peers:       cfg.Peers,
-		currentTerm: 0,
-		votedFor:    0,
-		log:         []transport.LogEntry{{Term: 0, Index: 0}}, // sentinel
-		role:        Follower,
-		nextIndex:   make(map[uint64]uint64),
-		matchIndex:  make(map[uint64]uint64),
-		ctrl:        ctrl,
-		observer:    cfg.Observer,
-		rttWin:      rttWin,
-		transport:   transport.NewSync(cfg.ID, cfg.ListenAddr, cfg.PeerAddrs),
-		stopCh:      make(chan struct{}),
+		id:               cfg.ID,
+		peers:            cfg.Peers,
+		currentTerm:      0,
+		votedFor:         0,
+		log:              []transport.LogEntry{{Term: 0, Index: 0}}, // sentinel
+		role:             Follower,
+		nextIndex:        make(map[uint64]uint64),
+		matchIndex:       make(map[uint64]uint64),
+		pendingProposals: make(map[uint64]chan error),
+		ctrl:             ctrl,
+		observer:         cfg.Observer,
+		rttWin:           rttWin,
+		transport:        transport.NewSync(cfg.ID, cfg.ListenAddr, cfg.PeerAddrs),
+		stopCh:           make(chan struct{}),
 	}
 
 	return n
@@ -265,6 +274,8 @@ func (n *Node) startElection() {
 	n.role = Candidate
 	n.votedFor = n.id
 	n.votesReceived = map[uint64]bool{n.id: true}
+	n.leaderID = 0
+	n.electionStart = time.Now()
 
 	n.observer.RecordRoleChange(metrics.RoleCandidate, n.currentTerm)
 	log.Printf("[raft] node=%d starting election term=%d (failures=%d)", n.id, n.currentTerm, n.electionFailures)
@@ -324,7 +335,15 @@ func (n *Node) checkElectionWon() {
 
 func (n *Node) becomeLeader() {
 	n.role = Leader
+	n.leaderID = n.id
 	n.electionFailures = 0
+
+	// Record election duration metric.
+	if !n.electionStart.IsZero() {
+		n.observer.RecordElectionDuration(time.Since(n.electionStart))
+		n.electionStart = time.Time{}
+	}
+
 	n.observer.RecordRoleChange(metrics.RoleLeader, n.currentTerm)
 	log.Printf("[raft] node=%d became leader term=%d", n.id, n.currentTerm)
 
@@ -350,6 +369,16 @@ func (n *Node) becomeFollower(term uint64) {
 	n.currentTerm = term
 	n.votedFor = 0
 	n.electionFailures = 0
+
+	// Cancel any pending proposals – we are no longer the leader.
+	for idx, ch := range n.pendingProposals {
+		select {
+		case ch <- fmt.Errorf("leadership lost"):
+		default:
+		}
+		delete(n.pendingProposals, idx)
+	}
+
 	n.resetElectionTimer()
 }
 
@@ -484,6 +513,7 @@ func (n *Node) handleAppendEntries(msg transport.Message) *transport.Message {
 
 	// Valid AppendEntries from current leader — reset election timer.
 	n.resetElectionTimer()
+	n.leaderID = msg.From
 	if n.role == Candidate {
 		n.becomeFollower(msg.Term)
 	}
@@ -565,6 +595,17 @@ func (n *Node) advanceCommitIndex() {
 			n.commitIndex = idx
 		}
 	}
+
+	// Notify pending proposals that have been committed.
+	for idx, ch := range n.pendingProposals {
+		if idx <= n.commitIndex {
+			select {
+			case ch <- nil:
+			default:
+			}
+			delete(n.pendingProposals, idx)
+		}
+	}
 }
 
 // --------------------------------------------------------------------
@@ -623,4 +664,70 @@ func (n *Node) aggregateRTT() time.Duration {
 func (n *Node) lastLogInfo() (index uint64, term uint64) {
 	last := n.log[len(n.log)-1]
 	return last.Index, last.Term
+}
+
+// ====================================================================
+// Exported accessors (used by HTTP API)
+// ====================================================================
+
+// Propose appends a command to the leader's log and waits for it to be
+// committed by a majority.  Returns an error if this node is not the leader
+// or if the commit does not complete within 10 seconds.
+func (n *Node) Propose(command string) error {
+	n.mu.Lock()
+	if n.role != Leader {
+		lid := n.leaderID
+		n.mu.Unlock()
+		return fmt.Errorf("not leader; current leader is node %d", lid)
+	}
+
+	lastEntry := n.log[len(n.log)-1]
+	newIdx := lastEntry.Index + 1
+	entry := transport.LogEntry{
+		Term:    n.currentTerm,
+		Index:   newIdx,
+		Command: command,
+	}
+	n.log = append(n.log, entry)
+
+	done := make(chan error, 1)
+	n.pendingProposals[newIdx] = done
+
+	// Immediately replicate to all peers.
+	n.broadcastAppendEntries()
+
+	n.mu.Unlock()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		n.mu.Lock()
+		delete(n.pendingProposals, newIdx)
+		n.mu.Unlock()
+		return fmt.Errorf("proposal timed out")
+	case <-n.stopCh:
+		return fmt.Errorf("node stopped")
+	}
+}
+
+// LeaderID returns the ID of the current known leader (0 if unknown).
+func (n *Node) LeaderID() uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.leaderID
+}
+
+// RoleString returns the node's current role as a string.
+func (n *Node) RoleString() string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.role.String()
+}
+
+// CurrentTerm returns the node's current Raft term.
+func (n *Node) CurrentTerm() uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.currentTerm
 }

@@ -80,6 +80,20 @@ func (o *FileObserver) RecordRoleChange(role RaftRole, term uint64) {
 		time.Now().Format("2006/01/02 15:04:05.000000"), o.nodeID, role, term)
 }
 
+func (o *FileObserver) RecordProposalLatency(latency time.Duration, success bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Fprintf(o.file, "%s [node=%d] proposal latency=%s success=%v\n",
+		time.Now().Format("2006/01/02 15:04:05.000000"), o.nodeID, latency, success)
+}
+
+func (o *FileObserver) RecordElectionDuration(duration time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Fprintf(o.file, "%s [node=%d] election_duration duration=%s\n",
+		time.Now().Format("2006/01/02 15:04:05.000000"), o.nodeID, duration)
+}
+
 // --------------------------------------------------------------------------
 // MultiObserver – fan-out to multiple backends
 // --------------------------------------------------------------------------
@@ -109,5 +123,17 @@ func (m *MultiObserver) RecordControllerOutput(s ControllerSnapshot) {
 func (m *MultiObserver) RecordRoleChange(role RaftRole, term uint64) {
 	for _, o := range m.observers {
 		o.RecordRoleChange(role, term)
+	}
+}
+
+func (m *MultiObserver) RecordProposalLatency(latency time.Duration, success bool) {
+	for _, o := range m.observers {
+		o.RecordProposalLatency(latency, success)
+	}
+}
+
+func (m *MultiObserver) RecordElectionDuration(duration time.Duration) {
+	for _, o := range m.observers {
+		o.RecordElectionDuration(duration)
 	}
 }

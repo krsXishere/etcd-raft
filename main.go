@@ -8,6 +8,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -22,7 +23,7 @@ import (
 	"github.com/adaptive-raft/controller"
 	"github.com/adaptive-raft/metrics"
 	"github.com/adaptive-raft/raft"
-	"github.com/prometheus/client_golang/prometheus/promhttp" // Biasanya ini juga butuh
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -57,15 +58,6 @@ func main() {
 	flag.IntVar(&rttWindow, "rtt-window", 20, "RTT sliding window size")
 
 	flag.Parse()
-
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		addr := fmt.Sprintf(":%d", metricsPort)
-		log.Printf("Prometheus metrics endpoint listening on %s/metrics", addr)
-		if err := http.ListenAndServe(addr, nil); err != nil {
-			log.Fatalf("metrics http server: %v", err)
-		}
-	}()
 
 	if id == 0 || port == 0 || peersFlag == "" {
 		fmt.Fprintln(os.Stderr, "Usage: -id <1-5> -port <port> -peers 'id=host:port,...'")
@@ -133,6 +125,70 @@ func main() {
 	if err := node.Start(); err != nil {
 		log.Fatalf("node start: %v", err)
 	}
+
+	// ── HTTP API + Prometheus metrics server ─────────────────────────
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		status := map[string]interface{}{
+			"id":        id,
+			"role":      node.RoleString(),
+			"leader_id": node.LeaderID(),
+			"term":      node.CurrentTerm(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(status)
+	})
+
+	mux.HandleFunc("/propose", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Command string `json:"command"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		start := time.Now()
+		propErr := node.Propose(req.Command)
+		latency := time.Since(start)
+
+		resp := map[string]interface{}{
+			"latency_ms": float64(latency.Microseconds()) / 1000.0,
+		}
+
+		if propErr != nil {
+			resp["success"] = false
+			resp["error"] = propErr.Error()
+			resp["leader_id"] = node.LeaderID()
+			observer.RecordProposalLatency(latency, false)
+		} else {
+			resp["success"] = true
+			observer.RecordProposalLatency(latency, true)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	go func() {
+		addr := fmt.Sprintf(":%d", metricsPort)
+		log.Printf("[main] API + metrics endpoint on %s", addr)
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			log.Fatalf("http server: %v", err)
+		}
+	}()
 
 	log.Printf("[main] node %d running on port %d, peers=%v", id, port, peerIDs)
 

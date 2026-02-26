@@ -277,7 +277,12 @@ func NewSync(nodeID uint64, listenAddr string, peers map[uint64]string) *SyncTra
 // RegisterSyncHandler sets a handler that returns a reply directly.
 func (st *SyncTransport) RegisterSyncHandler(h func(msg Message) *Message) {
 	st.syncHandler = h
-	// Also wire up the HTTP handler.
+	// Also set the base Transport handler so that inline replies from
+	// Send() (the HTTP response body) are dispatched through the raft
+	// state machine.  Without this, AppendEntriesReply would never arrive.
+	st.handler = func(msg Message) {
+		h(msg)
+	}
 }
 
 // Start overrides Transport.Start to use the sync handler in HTTP.
