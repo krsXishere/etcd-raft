@@ -20,41 +20,29 @@ const (
 )
 
 // Observer is the interface any metrics backend must satisfy.
-// Implement this with OpenTelemetry, Prometheus, or plain logging.
 type Observer interface {
 	// ── Cluster 1: Adaptive Parameter Tuning ──
-
-	// RecordRTT is called whenever a new RTT sample is obtained from a peer.
+	// Sumber: RecordRTT dipanggil dari node.recordRTT()
+	//         RecordControllerOutput dipanggil dari node.recordRTT()
 	RecordRTT(peerID uint64, rtt time.Duration)
-
-	// RecordControllerOutput is called after every PID controller update.
 	RecordControllerOutput(snapshot ControllerSnapshot)
 
 	// ── Cluster 2: System Throughput ──
-
-	// RecordCommit is called when a log entry is committed by majority consensus.
+	// Sumber: RecordCommit dipanggil saat entry berhasil di-commit
 	RecordCommit(term uint64, index uint64)
 
 	// ── Cluster 3: Consensus Latency ──
-
-	// RecordReplicationLatency records the time from leader receiving a request
-	// until that entry is committed by a majority.
-	RecordReplicationLatency(d time.Duration)
+	// Sumber: RecordProposalLatency dipanggil dari main.go /propose handler
+	RecordProposalLatency(latency time.Duration, success bool)
 
 	// ── Cluster 4: Control Overhead ──
-
-	// RecordTuningDuration records the CPU time spent computing one PID cycle.
+	// Sumber: RecordTuningDuration dipanggil dari controller PID cycle
 	RecordTuningDuration(d time.Duration)
 
 	// ── Cluster 5: Role & State Tracking ──
-
-	// RecordRoleChange is called when the node's Raft role changes.
+	// Sumber: RecordRoleChange dipanggil dari node.becomeFollower/Candidate/Leader
+	//         RecordElectionDuration dipanggil dari node.becomeLeader
 	RecordRoleChange(role RaftRole, term uint64)
-
-	// RecordProposalLatency is called after a proposal completes (or fails).
-	RecordProposalLatency(latency time.Duration, success bool)
-
-	// RecordElectionDuration is called when a node wins an election.
 	RecordElectionDuration(duration time.Duration)
 }
 
@@ -109,12 +97,6 @@ func (o *LogObserver) RecordCommit(term uint64, index uint64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	log.Printf("[node=%d] commit term=%d index=%d", o.nodeID, term, index)
-}
-
-func (o *LogObserver) RecordReplicationLatency(d time.Duration) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	log.Printf("[node=%d] replication_latency=%s", o.nodeID, d)
 }
 
 func (o *LogObserver) RecordTuningDuration(d time.Duration) {

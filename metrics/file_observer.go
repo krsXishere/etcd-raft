@@ -80,13 +80,6 @@ func (o *FileObserver) RecordCommit(term uint64, index uint64) {
 		time.Now().Format("2006/01/02 15:04:05.000000"), o.nodeID, term, index)
 }
 
-func (o *FileObserver) RecordReplicationLatency(d time.Duration) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	fmt.Fprintf(o.file, "%s [node=%d] replication_latency duration=%s\n",
-		time.Now().Format("2006/01/02 15:04:05.000000"), o.nodeID, d)
-}
-
 func (o *FileObserver) RecordTuningDuration(d time.Duration) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -144,12 +137,6 @@ func (m *MultiObserver) RecordControllerOutput(s ControllerSnapshot) {
 func (m *MultiObserver) RecordCommit(term uint64, index uint64) {
 	for _, o := range m.observers {
 		o.RecordCommit(term, index)
-	}
-}
-
-func (m *MultiObserver) RecordReplicationLatency(d time.Duration) {
-	for _, o := range m.observers {
-		o.RecordReplicationLatency(d)
 	}
 }
 
