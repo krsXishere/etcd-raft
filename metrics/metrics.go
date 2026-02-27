@@ -50,6 +50,12 @@ type Observer interface {
 
 	// RecordRoleChange is called when the node's Raft role changes.
 	RecordRoleChange(role RaftRole, term uint64)
+
+	// RecordProposalLatency is called after a proposal completes (or fails).
+	RecordProposalLatency(latency time.Duration, success bool)
+
+	// RecordElectionDuration is called when a node wins an election.
+	RecordElectionDuration(duration time.Duration)
 }
 
 // ControllerSnapshot holds all the values the PID controller computed during
@@ -121,6 +127,18 @@ func (o *LogObserver) RecordRoleChange(role RaftRole, term uint64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	log.Printf("[node=%d] role_change role=%s term=%d", o.nodeID, role, term)
+}
+
+func (o *LogObserver) RecordProposalLatency(latency time.Duration, success bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	log.Printf("[node=%d] proposal latency=%s success=%v", o.nodeID, latency, success)
+}
+
+func (o *LogObserver) RecordElectionDuration(duration time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	log.Printf("[node=%d] election_duration duration=%s", o.nodeID, duration)
 }
 
 // --------------------------------------------------------------------------

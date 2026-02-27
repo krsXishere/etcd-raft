@@ -1,0 +1,7 @@
+.git
+logs/
+results/
+*.log
+adaptive-raft
+benchmark
+.env.local

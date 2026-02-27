@@ -1,0 +1,243 @@
+###############################################################################
+# docker-compose.yml – Adaptive Raft emulation with traffic control
+#
+# TC parameters are fully configurable via environment variables.
+# Edit .env or override on the command line.
+#
+# Usage:
+#   # Default (Jakarta-Surabaya, low latency, steady workload):
+#   docker compose up --build
+#
+#   # Jakarta-Papua (high latency / unstable):
+#   TC_DELAY_REMOTE=150ms TC_JITTER_REMOTE=50ms TC_LOSS_REMOTE=2% \
+#       docker compose up --build
+#
+#   # Custom per-variable tuning:
+#   TC_DELAY_HUB=5ms TC_DELAY_REMOTE=80ms TC_JITTER_REMOTE=30ms \
+#       TC_LOSS_REMOTE=1.5% WORKLOAD_PATTERN=bursty \
+#       docker compose up --build
+#
+# Variables (see .env for defaults):
+#   TC_DELAY_HUB / TC_JITTER_HUB / TC_LOSS_HUB / TC_CORRELATION_HUB
+#   TC_DELAY_REMOTE / TC_JITTER_REMOTE / TC_LOSS_REMOTE / TC_CORRELATION_REMOTE
+#   WORKLOAD_PATTERN / BENCHMARK_RATE / BENCHMARK_BURST_RATE / etc.
+#
+# Ports exposed on host:
+#   9001-9005  Raft transport (nodes 1-5)
+#   9201-9205  Metrics + API (nodes 1-5)   → /metrics, /propose, /status, /health
+#   9090       Prometheus UI
+###############################################################################
+
+networks:
+  raft-net:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  benchmark-results:
+
+services:
+  # ─────────────────────────────────────────────────────────
+  # Node 1 – Jakarta (also hosts Prometheus scrape target)
+  # ─────────────────────────────────────────────────────────
+  node1:
+    build: .
+    container_name: raft-node1
+    hostname: node1
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raft-net
+    ports:
+      - "9001:9001"
+      - "9201:9200"
+    environment:
+      NODE_ID: "1"
+      NODE_PORT: "9001"
+      METRICS_PORT: "9200"
+      PEERS: "2=node2:9002,3=node3:9003,4=node4:9004,5=node5:9005"
+      TC_DELAY: "${TC_DELAY_HUB:-2ms}"
+      TC_JITTER: "${TC_JITTER_HUB:-1ms}"
+      TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
+      TC_CORRELATION: "${TC_CORRELATION_HUB:-25%}"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Node 2 – Jakarta
+  # ─────────────────────────────────────────────────────────
+  node2:
+    build: .
+    container_name: raft-node2
+    hostname: node2
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raft-net
+    ports:
+      - "9002:9002"
+      - "9202:9200"
+    environment:
+      NODE_ID: "2"
+      NODE_PORT: "9002"
+      METRICS_PORT: "9200"
+      PEERS: "1=node1:9001,3=node3:9003,4=node4:9004,5=node5:9005"
+      TC_DELAY: "${TC_DELAY_HUB:-2ms}"
+      TC_JITTER: "${TC_JITTER_HUB:-1ms}"
+      TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
+      TC_CORRELATION: "${TC_CORRELATION_HUB:-25%}"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Node 3 – Jakarta
+  # ─────────────────────────────────────────────────────────
+  node3:
+    build: .
+    container_name: raft-node3
+    hostname: node3
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raft-net
+    ports:
+      - "9003:9003"
+      - "9203:9200"
+    environment:
+      NODE_ID: "3"
+      NODE_PORT: "9003"
+      METRICS_PORT: "9200"
+      PEERS: "1=node1:9001,2=node2:9002,4=node4:9004,5=node5:9005"
+      TC_DELAY: "${TC_DELAY_HUB:-2ms}"
+      TC_JITTER: "${TC_JITTER_HUB:-1ms}"
+      TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
+      TC_CORRELATION: "${TC_CORRELATION_HUB:-25%}"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Node 4 – Remote (TC params via TC_*_REMOTE variables)
+  # ─────────────────────────────────────────────────────────
+  node4:
+    build: .
+    container_name: raft-node4
+    hostname: node4
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raft-net
+    ports:
+      - "9004:9004"
+      - "9204:9200"
+    environment:
+      NODE_ID: "4"
+      NODE_PORT: "9004"
+      METRICS_PORT: "9200"
+      PEERS: "1=node1:9001,2=node2:9002,3=node3:9003,5=node5:9005"
+      TC_DELAY: "${TC_DELAY_REMOTE:-10ms}"
+      TC_JITTER: "${TC_JITTER_REMOTE:-3ms}"
+      TC_LOSS: "${TC_LOSS_REMOTE:-0.1%}"
+      TC_CORRELATION: "${TC_CORRELATION_REMOTE:-25%}"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Node 5 – Remote (TC params via TC_*_REMOTE variables)
+  # ─────────────────────────────────────────────────────────
+  node5:
+    build: .
+    container_name: raft-node5
+    hostname: node5
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raft-net
+    ports:
+      - "9005:9005"
+      - "9205:9200"
+    environment:
+      NODE_ID: "5"
+      NODE_PORT: "9005"
+      METRICS_PORT: "9200"
+      PEERS: "1=node1:9001,2=node2:9002,3=node3:9003,4=node4:9004"
+      TC_DELAY: "${TC_DELAY_REMOTE:-10ms}"
+      TC_JITTER: "${TC_JITTER_REMOTE:-3ms}"
+      TC_LOSS: "${TC_LOSS_REMOTE:-0.1%}"
+      TC_CORRELATION: "${TC_CORRELATION_REMOTE:-25%}"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Prometheus – hosted alongside node1
+  # ─────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: raft-prometheus
+    hostname: prometheus
+    networks:
+      - raft-net
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus-docker.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      node1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Benchmark – workload generator
+  # ─────────────────────────────────────────────────────────
+  benchmark:
+    build: .
+    container_name: raft-benchmark
+    hostname: benchmark
+    networks:
+      - raft-net
+    entrypoint: ["/app/benchmark"]
+    environment:
+      TARGETS: "node1:9200,node2:9200,node3:9200,node4:9200,node5:9200"
+      PATTERN: "${WORKLOAD_PATTERN:-steady}"
+      DURATION: "${BENCHMARK_DURATION:-60s}"
+      RATE: "${BENCHMARK_RATE:-100}"
+      BURST_RATE: "${BENCHMARK_BURST_RATE:-500}"
+      WARMUP: "${BENCHMARK_WARMUP:-15s}"
+    volumes:
+      - benchmark-results:/app/results
+    depends_on:
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
+      node4:
+        condition: service_healthy
+      node5:
+        condition: service_healthy

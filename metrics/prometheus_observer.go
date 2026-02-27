@@ -94,6 +94,36 @@ var (
 		Help:      "Distribution of election timeout values",
 		Buckets:   []float64{0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0},
 	}, []string{"node_id"})
+
+	// Proposal latency histogram (for P95, P99 consensus latency)
+	proposalLatencyHistogram = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "raft",
+		Name:      "proposal_latency_seconds",
+		Help:      "Distribution of proposal commit latency in seconds (consensus latency)",
+		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0},
+	}, []string{"node_id", "status"})
+
+	// Leader election duration histogram
+	leaderElectionDurationHistogram = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "raft",
+		Name:      "leader_election_duration_seconds",
+		Help:      "Distribution of leader election duration in seconds",
+		Buckets:   []float64{0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0},
+	}, []string{"node_id"})
+
+	// Proposals committed total
+	proposalsCommittedCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "raft",
+		Name:      "proposals_committed_total",
+		Help:      "Total number of proposals committed",
+	}, []string{"node_id"})
+
+	// Proposals failed total
+	proposalsFailedCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "raft",
+		Name:      "proposals_failed_total",
+		Help:      "Total number of proposals that failed",
+	}, []string{"node_id"})
 )
 
 // ============================================================================
@@ -296,4 +326,23 @@ func (p *PrometheusObserver) updateRoleMetrics(role RaftRole) {
 	nodeRoleGauge.WithLabelValues(p.nodeLabel, string(RoleCandidate)).Set(0)
 	nodeRoleGauge.WithLabelValues(p.nodeLabel, string(RoleLeader)).Set(0)
 	nodeRoleGauge.WithLabelValues(p.nodeLabel, string(role)).Set(1)
+}
+
+// RecordProposalLatency records the latency of a proposal (consensus latency).
+func (p *PrometheusObserver) RecordProposalLatency(latency time.Duration, success bool) {
+	status := "success"
+	if !success {
+		status = "failure"
+	}
+	proposalLatencyHistogram.WithLabelValues(p.nodeLabel, status).Observe(latency.Seconds())
+	if success {
+		proposalsCommittedCounter.WithLabelValues(p.nodeLabel).Inc()
+	} else {
+		proposalsFailedCounter.WithLabelValues(p.nodeLabel).Inc()
+	}
+}
+
+// RecordElectionDuration records the time it took to complete a leader election.
+func (p *PrometheusObserver) RecordElectionDuration(duration time.Duration) {
+	leaderElectionDurationHistogram.WithLabelValues(p.nodeLabel).Observe(duration.Seconds())
 }
