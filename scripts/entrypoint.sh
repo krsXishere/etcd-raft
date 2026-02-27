@@ -1,57 +1,45 @@
 #!/bin/bash
 # entrypoint.sh – Apply Linux Traffic Control (tc netem) rules based on
-# the NETWORK_PROFILE and NODE_LOCATION environment variables, then
-# start the adaptive-raft node.
+# environment variables, then start the adaptive-raft node.
 #
-# Profiles:
-#   low-latency  (Jakarta-Surabaya)  – moderate delay, low jitter & loss
-#   high-latency (Jakarta-Papua)     – high delay, significant jitter & loss
-#   none                             – no artificial latency
+# TC parameters are fully configurable per-node via env vars:
+#   TC_DELAY        – base delay          (e.g. "10ms",  default "0ms")
+#   TC_JITTER       – delay variation     (e.g. "3ms",   default "0ms")
+#   TC_LOSS         – packet loss rate    (e.g. "0.1%",  default "0%")
+#   TC_CORRELATION  – jitter correlation  (e.g. "25%",   default "0%")
+#   TC_DUPLICATE    – packet duplication  (e.g. "0.1%",  default "0%")
+#   TC_REORDER      – packet reordering   (e.g. "0.1%",  default "0%")
 #
-# Node locations:
-#   jakarta   – low-latency hub
-#   surabaya  – moderate-latency peer
-#   papua     – high-latency / unstable peer
+# Set TC_DELAY="0ms" (or leave empty) to skip TC entirely.
+#
+# Suggested presets (pass via .env or command-line):
+#   Jakarta-Surabaya (Low Latency):
+#     Hub   → TC_DELAY=2ms  TC_JITTER=1ms  TC_LOSS=0.1% TC_CORRELATION=25%
+#     Remote→ TC_DELAY=10ms TC_JITTER=3ms  TC_LOSS=0.1% TC_CORRELATION=25%
+#   Jakarta-Papua (High Latency / Unstable):
+#     Hub   → TC_DELAY=2ms   TC_JITTER=1ms   TC_LOSS=0.1% TC_CORRELATION=25%
+#     Remote→ TC_DELAY=150ms TC_JITTER=50ms  TC_LOSS=2%   TC_CORRELATION=25%
 
 set -e
 
-PROFILE="${NETWORK_PROFILE:-low-latency}"
-LOCATION="${NODE_LOCATION:-jakarta}"
+TC_DELAY="${TC_DELAY:-0ms}"
+TC_JITTER="${TC_JITTER:-0ms}"
+TC_LOSS="${TC_LOSS:-0%}"
+TC_CORRELATION="${TC_CORRELATION:-0%}"
+TC_DUPLICATE="${TC_DUPLICATE:-0%}"
+TC_REORDER="${TC_REORDER:-0%}"
 
-apply_tc() {
-    local delay="$1" jitter="$2" loss="$3" correlation="$4"
-    echo "[TC] profile=${PROFILE} location=${LOCATION}"
-    echo "[TC] delay=${delay} jitter=${jitter} loss=${loss} correlation=${correlation}"
+if [ "$TC_DELAY" != "0ms" ] && [ -n "$TC_DELAY" ]; then
+    echo "[TC] node=${NODE_ID} delay=${TC_DELAY} jitter=${TC_JITTER} loss=${TC_LOSS} correlation=${TC_CORRELATION} duplicate=${TC_DUPLICATE} reorder=${TC_REORDER}"
     tc qdisc add dev eth0 root netem \
-        delay ${delay} ${jitter} ${correlation} \
-        loss ${loss} \
+        delay ${TC_DELAY} ${TC_JITTER} ${TC_CORRELATION} \
+        loss ${TC_LOSS} \
+        duplicate ${TC_DUPLICATE} \
+        reorder ${TC_REORDER} \
         2>/dev/null || echo "[TC] WARNING: tc command failed (may need NET_ADMIN capability)"
-}
-
-case "$PROFILE" in
-    low-latency)
-        # Jakarta-Surabaya profile: low overall latency
-        case "$LOCATION" in
-            jakarta)    apply_tc "2ms"  "1ms"  "0.1%"  "25%" ;;
-            surabaya)   apply_tc "10ms" "3ms"  "0.1%"  "25%" ;;
-            *)          apply_tc "5ms"  "2ms"  "0.1%"  "25%" ;;
-        esac
-        ;;
-    high-latency)
-        # Jakarta-Papua profile: heterogeneous latency with instability
-        case "$LOCATION" in
-            jakarta)    apply_tc "2ms"   "1ms"   "0.1%"  "25%" ;;
-            papua)      apply_tc "150ms" "50ms"  "2%"    "25%" ;;
-            *)          apply_tc "50ms"  "20ms"  "1%"    "25%" ;;
-        esac
-        ;;
-    none)
-        echo "[TC] No traffic control applied"
-        ;;
-    *)
-        echo "[TC] Unknown profile: $PROFILE – no TC applied"
-        ;;
-esac
+else
+    echo "[TC] No traffic control applied (TC_DELAY=${TC_DELAY})"
+fi
 
 echo "[entrypoint] Starting adaptive-raft node..."
 exec /app/adaptive-raft \

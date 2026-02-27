@@ -1,16 +1,26 @@
 ###############################################################################
 # docker-compose.yml – Adaptive Raft emulation with traffic control
 #
+# TC parameters are fully configurable via environment variables.
+# Edit .env or override on the command line.
+#
 # Usage:
-#   # Jakarta-Surabaya (low latency):
-#   NETWORK_PROFILE=low-latency docker compose up --build
+#   # Default (Jakarta-Surabaya, low latency, steady workload):
+#   docker compose up --build
 #
 #   # Jakarta-Papua (high latency / unstable):
-#   NETWORK_PROFILE=high-latency docker compose up --build
-#
-#   # Custom workload pattern:
-#   NETWORK_PROFILE=high-latency WORKLOAD_PATTERN=bursty BENCHMARK_RATE=200 \
+#   TC_DELAY_REMOTE=150ms TC_JITTER_REMOTE=50ms TC_LOSS_REMOTE=2% \
 #       docker compose up --build
+#
+#   # Custom per-variable tuning:
+#   TC_DELAY_HUB=5ms TC_DELAY_REMOTE=80ms TC_JITTER_REMOTE=30ms \
+#       TC_LOSS_REMOTE=1.5% WORKLOAD_PATTERN=bursty \
+#       docker compose up --build
+#
+# Variables (see .env for defaults):
+#   TC_DELAY_HUB / TC_JITTER_HUB / TC_LOSS_HUB / TC_CORRELATION_HUB
+#   TC_DELAY_REMOTE / TC_JITTER_REMOTE / TC_LOSS_REMOTE / TC_CORRELATION_REMOTE
+#   WORKLOAD_PATTERN / BENCHMARK_RATE / BENCHMARK_BURST_RATE / etc.
 #
 # Ports exposed on host:
 #   9001-9005  Raft transport (nodes 1-5)
@@ -46,8 +56,10 @@ services:
       NODE_PORT: "9001"
       METRICS_PORT: "9200"
       PEERS: "2=node2:9002,3=node3:9003,4=node4:9004,5=node5:9005"
-      NETWORK_PROFILE: "${NETWORK_PROFILE:-low-latency}"
-      NODE_LOCATION: "jakarta"
+      TC_DELAY: "${TC_DELAY_HUB:-2ms}"
+      TC_JITTER: "${TC_JITTER_HUB:-1ms}"
+      TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
+      TC_CORRELATION: "${TC_CORRELATION_HUB:-25%}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -75,8 +87,10 @@ services:
       NODE_PORT: "9002"
       METRICS_PORT: "9200"
       PEERS: "1=node1:9001,3=node3:9003,4=node4:9004,5=node5:9005"
-      NETWORK_PROFILE: "${NETWORK_PROFILE:-low-latency}"
-      NODE_LOCATION: "jakarta"
+      TC_DELAY: "${TC_DELAY_HUB:-2ms}"
+      TC_JITTER: "${TC_JITTER_HUB:-1ms}"
+      TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
+      TC_CORRELATION: "${TC_CORRELATION_HUB:-25%}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -104,8 +118,10 @@ services:
       NODE_PORT: "9003"
       METRICS_PORT: "9200"
       PEERS: "1=node1:9001,2=node2:9002,4=node4:9004,5=node5:9005"
-      NETWORK_PROFILE: "${NETWORK_PROFILE:-low-latency}"
-      NODE_LOCATION: "jakarta"
+      TC_DELAY: "${TC_DELAY_HUB:-2ms}"
+      TC_JITTER: "${TC_JITTER_HUB:-1ms}"
+      TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
+      TC_CORRELATION: "${TC_CORRELATION_HUB:-25%}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -115,7 +131,7 @@ services:
     restart: unless-stopped
 
   # ─────────────────────────────────────────────────────────
-  # Node 4 – Surabaya (low-latency) / Papua (high-latency)
+  # Node 4 – Remote (TC params via TC_*_REMOTE variables)
   # ─────────────────────────────────────────────────────────
   node4:
     build: .
@@ -133,8 +149,10 @@ services:
       NODE_PORT: "9004"
       METRICS_PORT: "9200"
       PEERS: "1=node1:9001,2=node2:9002,3=node3:9003,5=node5:9005"
-      NETWORK_PROFILE: "${NETWORK_PROFILE:-low-latency}"
-      NODE_LOCATION: "${REMOTE_LOCATION:-surabaya}"
+      TC_DELAY: "${TC_DELAY_REMOTE:-10ms}"
+      TC_JITTER: "${TC_JITTER_REMOTE:-3ms}"
+      TC_LOSS: "${TC_LOSS_REMOTE:-0.1%}"
+      TC_CORRELATION: "${TC_CORRELATION_REMOTE:-25%}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -144,7 +162,7 @@ services:
     restart: unless-stopped
 
   # ─────────────────────────────────────────────────────────
-  # Node 5 – Surabaya (low-latency) / Papua (high-latency)
+  # Node 5 – Remote (TC params via TC_*_REMOTE variables)
   # ─────────────────────────────────────────────────────────
   node5:
     build: .
@@ -162,8 +180,10 @@ services:
       NODE_PORT: "9005"
       METRICS_PORT: "9200"
       PEERS: "1=node1:9001,2=node2:9002,3=node3:9003,4=node4:9004"
-      NETWORK_PROFILE: "${NETWORK_PROFILE:-low-latency}"
-      NODE_LOCATION: "${REMOTE_LOCATION:-surabaya}"
+      TC_DELAY: "${TC_DELAY_REMOTE:-10ms}"
+      TC_JITTER: "${TC_JITTER_REMOTE:-3ms}"
+      TC_LOSS: "${TC_LOSS_REMOTE:-0.1%}"
+      TC_CORRELATION: "${TC_CORRELATION_REMOTE:-25%}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
