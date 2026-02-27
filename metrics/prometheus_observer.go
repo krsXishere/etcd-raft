@@ -94,36 +94,6 @@ var (
 		Help:      "Distribution of election timeout values",
 		Buckets:   []float64{0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0},
 	}, []string{"node_id"})
-
-	// Proposal latency histogram (for P95, P99 consensus latency)
-	proposalLatencyHistogram = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "raft",
-		Name:      "proposal_latency_seconds",
-		Help:      "Distribution of proposal commit latency in seconds (consensus latency)",
-		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0},
-	}, []string{"node_id", "status"})
-
-	// Leader election duration histogram
-	leaderElectionDurationHistogram = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "raft",
-		Name:      "leader_election_duration_seconds",
-		Help:      "Distribution of leader election duration in seconds",
-		Buckets:   []float64{0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0},
-	}, []string{"node_id"})
-
-	// Proposals committed total
-	proposalsCommittedCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "raft",
-		Name:      "proposals_committed_total",
-		Help:      "Total number of proposals committed",
-	}, []string{"node_id"})
-
-	// Proposals failed total
-	proposalsFailedCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "raft",
-		Name:      "proposals_failed_total",
-		Help:      "Total number of proposals that failed",
-	}, []string{"node_id"})
 )
 
 // ============================================================================
@@ -138,6 +108,22 @@ var (
 		Subsystem: "throughput",
 		Name:      "committed_entries_total",
 		Help:      "Total log entries committed (reached majority consensus)",
+	}, []string{"node_id"})
+
+	// Counter: total proposals yang berhasil committed
+	proposalsCommittedCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "raft",
+		Subsystem: "throughput",
+		Name:      "proposals_committed_total",
+		Help:      "Total number of proposals committed",
+	}, []string{"node_id"})
+
+	// Counter: total proposals yang gagal
+	proposalsFailedCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "raft",
+		Subsystem: "throughput",
+		Name:      "proposals_failed_total",
+		Help:      "Total number of proposals that failed",
 	}, []string{"node_id"})
 )
 
@@ -155,6 +141,15 @@ var (
 		Help:      "Time from leader receiving a request until commit by majority",
 		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0},
 	}, []string{"node_id"})
+
+	// Histogram: distribusi latensi proposal (success/failure)
+	proposalLatencyHistogram = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "raft",
+		Subsystem: "consensus",
+		Name:      "proposal_latency_seconds",
+		Help:      "Distribution of proposal commit latency in seconds (consensus latency)",
+		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0},
+	}, []string{"node_id", "status"})
 )
 
 // ============================================================================
@@ -228,6 +223,15 @@ var (
 		Subsystem: "state",
 		Name:      "leader_elections_total",
 		Help:      "Total number of times this node became leader",
+	}, []string{"node_id"})
+
+	// Histogram: durasi proses leader election (detik)
+	leaderElectionDurationHistogram = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "raft",
+		Subsystem: "state",
+		Name:      "leader_election_duration_seconds",
+		Help:      "Distribution of leader election duration in seconds",
+		Buckets:   []float64{0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0},
 	}, []string{"node_id"})
 )
 

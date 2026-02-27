@@ -1,0 +1,182 @@
+# prometheus-rules.yml – Recording rules organized by metric cluster
+#
+# Recording rules pre-compute expensive queries so Grafana dashboards
+# load instantly. Each group maps to one evaluation cluster.
+
+groups:
+  # ──────────────────────────────────────────────────────────────────
+  # Cluster 1 — Adaptive Parameter Tuning
+  # Pre-computes RTT averages, PID error trends, and election timeout
+  # distributions for the adaptive tuning dashboard.
+  # ──────────────────────────────────────────────────────────────────
+  - name: cluster1_adaptive_parameter_tuning
+    interval: 5s
+    rules:
+      # P50 RTT per node (median network latency)
+      - record: raft:adaptive:rtt_p50_seconds
+        expr: >
+          histogram_quantile(0.50,
+            rate(raft_adaptive_rtt_duration_seconds_bucket[1m])
+          )
+
+      # P95 RTT per node
+      - record: raft:adaptive:rtt_p95_seconds
+        expr: >
+          histogram_quantile(0.95,
+            rate(raft_adaptive_rtt_duration_seconds_bucket[1m])
+          )
+
+      # P99 RTT per node
+      - record: raft:adaptive:rtt_p99_seconds
+        expr: >
+          histogram_quantile(0.99,
+            rate(raft_adaptive_rtt_duration_seconds_bucket[1m])
+          )
+
+      # Average election timeout across all nodes
+      - record: raft:adaptive:election_timeout_avg_seconds
+        expr: >
+          avg(raft_adaptive_election_timeout_milliseconds / 1000) by (node_id)
+
+      # PID error magnitude (absolute)
+      - record: raft:adaptive:pid_error_abs_milliseconds
+        expr: >
+          abs(raft_adaptive_controller_error_milliseconds)
+
+  # ──────────────────────────────────────────────────────────────────
+  # Cluster 2 — System Throughput
+  # Pre-computes commit rate (ops/sec) per node and cluster-wide.
+  # ──────────────────────────────────────────────────────────────────
+  - name: cluster2_system_throughput
+    interval: 5s
+    rules:
+      # Per-node throughput (commits/sec)
+      - record: raft:throughput:commits_per_second
+        expr: >
+          rate(raft_throughput_committed_entries_total[1m])
+
+      # Cluster-wide throughput (sum of all nodes)
+      - record: raft:throughput:cluster_commits_per_second
+        expr: >
+          sum(rate(raft_throughput_committed_entries_total[1m]))
+
+      # Per-node proposal success rate (ratio)
+      - record: raft:throughput:proposal_success_rate
+        expr: >
+          rate(raft_throughput_proposals_committed_total[1m])
+          /
+          (rate(raft_throughput_proposals_committed_total[1m]) + rate(raft_throughput_proposals_failed_total[1m]))
+
+      # Per-node proposals/sec
+      - record: raft:throughput:proposals_per_second
+        expr: >
+          rate(raft_throughput_proposals_committed_total[1m])
+
+  # ──────────────────────────────────────────────────────────────────
+  # Cluster 3 — Consensus Latency (P95, P99)
+  # Pre-computes replication and proposal latency percentiles.
+  # ──────────────────────────────────────────────────────────────────
+  - name: cluster3_consensus_latency
+    interval: 5s
+    rules:
+      # Replication latency P50
+      - record: raft:consensus:replication_latency_p50_seconds
+        expr: >
+          histogram_quantile(0.50,
+            rate(raft_consensus_replication_latency_seconds_bucket[1m])
+          )
+
+      # Replication latency P95
+      - record: raft:consensus:replication_latency_p95_seconds
+        expr: >
+          histogram_quantile(0.95,
+            rate(raft_consensus_replication_latency_seconds_bucket[1m])
+          )
+
+      # Replication latency P99
+      - record: raft:consensus:replication_latency_p99_seconds
+        expr: >
+          histogram_quantile(0.99,
+            rate(raft_consensus_replication_latency_seconds_bucket[1m])
+          )
+
+      # Proposal latency P95 (success only)
+      - record: raft:consensus:proposal_latency_p95_seconds
+        expr: >
+          histogram_quantile(0.95,
+            rate(raft_consensus_proposal_latency_seconds_bucket{status="success"}[1m])
+          )
+
+      # Proposal latency P99 (success only)
+      - record: raft:consensus:proposal_latency_p99_seconds
+        expr: >
+          histogram_quantile(0.99,
+            rate(raft_consensus_proposal_latency_seconds_bucket{status="success"}[1m])
+          )
+
+  # ──────────────────────────────────────────────────────────────────
+  # Cluster 4 — Control Overhead
+  # Pre-computes PID tuning cost to prove low overhead.
+  # ──────────────────────────────────────────────────────────────────
+  - name: cluster4_control_overhead
+    interval: 5s
+    rules:
+      # PID tuning duration P50
+      - record: raft:overhead:tuning_duration_p50_seconds
+        expr: >
+          histogram_quantile(0.50,
+            rate(raft_overhead_tuning_duration_seconds_bucket[1m])
+          )
+
+      # PID tuning duration P99
+      - record: raft:overhead:tuning_duration_p99_seconds
+        expr: >
+          histogram_quantile(0.99,
+            rate(raft_overhead_tuning_duration_seconds_bucket[1m])
+          )
+
+      # Controller update duration P99 (full cycle including I/O)
+      - record: raft:overhead:controller_update_p99_seconds
+        expr: >
+          histogram_quantile(0.99,
+            rate(raft_overhead_controller_update_duration_seconds_bucket[1m])
+          )
+
+      # Average CPU usage per node (from Go runtime)
+      - record: raft:overhead:cpu_usage_ratio
+        expr: >
+          rate(process_cpu_seconds_total[1m])
+
+      # Current memory usage per node (from Go runtime)
+      - record: raft:overhead:memory_usage_bytes
+        expr: >
+          go_memstats_alloc_bytes
+
+  # ──────────────────────────────────────────────────────────────────
+  # Cluster 5 — Role & State Tracking
+  # Pre-computes leader stability and election frequency metrics.
+  # ──────────────────────────────────────────────────────────────────
+  - name: cluster5_role_state_tracking
+    interval: 5s
+    rules:
+      # Role change rate per node (should be low = stable)
+      - record: raft:state:role_changes_per_minute
+        expr: >
+          rate(raft_state_role_changes_total[1m]) * 60
+
+      # Leader elections per minute cluster-wide
+      - record: raft:state:elections_per_minute
+        expr: >
+          sum(rate(raft_state_leader_elections_total[1m])) * 60
+
+      # Leader election duration P95
+      - record: raft:state:election_duration_p95_seconds
+        expr: >
+          histogram_quantile(0.95,
+            rate(raft_state_leader_election_duration_seconds_bucket[5m])
+          )
+
+      # Current leader node (node with role=leader, value=1)
+      - record: raft:state:is_leader
+        expr: >
+          raft_state_node_role{role="leader"}

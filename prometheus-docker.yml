@@ -1,10 +1,14 @@
 # prometheus-docker.yml – Prometheus configuration for Docker Compose deployment
 #
 # Scrapes all 5 raft nodes on their metrics port (9200 inside Docker network).
+# Recording rules pre-compute key metrics per cluster for fast Grafana dashboards.
 
 global:
   scrape_interval: 2s
   evaluation_interval: 2s
+
+rule_files:
+  - /etc/prometheus/prometheus-rules.yml
 
 scrape_configs:
   # Monitor Prometheus itself
@@ -13,7 +17,16 @@ scrape_configs:
       - targets:
           - "localhost:9090"
 
-  # Monitor all Raft nodes (metrics + API port)
+  # ────────────────────────────────────────────────────────────────
+  # Raft Cluster — all 5 nodes export metrics on port 9200
+  # Metric names follow the pattern: raft_{subsystem}_{metric}
+  #
+  #   Cluster 1 (Adaptive):   raft_adaptive_*
+  #   Cluster 2 (Throughput):  raft_throughput_*
+  #   Cluster 3 (Consensus):   raft_consensus_*
+  #   Cluster 4 (Overhead):    raft_overhead_*
+  #   Cluster 5 (State):       raft_state_*
+  # ────────────────────────────────────────────────────────────────
   - job_name: "raft-cluster"
     metrics_path: /metrics
     static_configs:
