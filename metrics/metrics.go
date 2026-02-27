@@ -22,11 +22,31 @@ const (
 // Observer is the interface any metrics backend must satisfy.
 // Implement this with OpenTelemetry, Prometheus, or plain logging.
 type Observer interface {
+	// ── Cluster 1: Adaptive Parameter Tuning ──
+
 	// RecordRTT is called whenever a new RTT sample is obtained from a peer.
 	RecordRTT(peerID uint64, rtt time.Duration)
 
 	// RecordControllerOutput is called after every PID controller update.
 	RecordControllerOutput(snapshot ControllerSnapshot)
+
+	// ── Cluster 2: System Throughput ──
+
+	// RecordCommit is called when a log entry is committed by majority consensus.
+	RecordCommit(term uint64, index uint64)
+
+	// ── Cluster 3: Consensus Latency ──
+
+	// RecordReplicationLatency records the time from leader receiving a request
+	// until that entry is committed by a majority.
+	RecordReplicationLatency(d time.Duration)
+
+	// ── Cluster 4: Control Overhead ──
+
+	// RecordTuningDuration records the CPU time spent computing one PID cycle.
+	RecordTuningDuration(d time.Duration)
+
+	// ── Cluster 5: Role & State Tracking ──
 
 	// RecordRoleChange is called when the node's Raft role changes.
 	RecordRoleChange(role RaftRole, term uint64)
@@ -83,6 +103,24 @@ func (o *LogObserver) RecordControllerOutput(s ControllerSnapshot) {
 		s.Derivative,
 		s.ElectionTimeout, s.HeartbeatInterval,
 	)
+}
+
+func (o *LogObserver) RecordCommit(term uint64, index uint64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	log.Printf("[node=%d] commit term=%d index=%d", o.nodeID, term, index)
+}
+
+func (o *LogObserver) RecordReplicationLatency(d time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	log.Printf("[node=%d] replication_latency=%s", o.nodeID, d)
+}
+
+func (o *LogObserver) RecordTuningDuration(d time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	log.Printf("[node=%d] tuning_duration=%s", o.nodeID, d)
 }
 
 func (o *LogObserver) RecordRoleChange(role RaftRole, term uint64) {
