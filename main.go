@@ -14,9 +14,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +27,134 @@ import (
 	"github.com/adaptive-raft/raft"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// ── Traffic Control (tc netem) runtime management ────────────────────────────
+
+// TCConfig holds the current netem parameters applied to the container.
+type TCConfig struct {
+	Delay       string `json:"delay"`
+	Jitter      string `json:"jitter"`
+	Loss        string `json:"loss"`
+	Correlation string `json:"correlation"`
+	Duplicate   string `json:"duplicate"`
+	Reorder     string `json:"reorder"`
+	Interface   string `json:"interface"`
+}
+
+// TCManager allows querying / changing netem rules at runtime.
+type TCManager struct {
+	mu      sync.Mutex
+	current TCConfig
+	nodeID  uint64
+}
+
+func NewTCManager(nodeID uint64) *TCManager {
+	return &TCManager{
+		nodeID: nodeID,
+		current: TCConfig{
+			Delay:       os.Getenv("TC_DELAY"),
+			Jitter:      os.Getenv("TC_JITTER"),
+			Loss:        os.Getenv("TC_LOSS"),
+			Correlation: os.Getenv("TC_CORRELATION"),
+			Duplicate:   os.Getenv("TC_DUPLICATE"),
+			Reorder:     os.Getenv("TC_REORDER"),
+			Interface:   "eth0",
+		},
+	}
+}
+
+// Apply sets new netem rules using `tc qdisc replace`.
+func (tm *TCManager) Apply(cfg TCConfig) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if cfg.Interface == "" {
+		cfg.Interface = "eth0"
+	}
+	if cfg.Delay == "" {
+		cfg.Delay = "0ms"
+	}
+	if cfg.Jitter == "" {
+		cfg.Jitter = "0ms"
+	}
+	if cfg.Loss == "" {
+		cfg.Loss = "0%"
+	}
+	if cfg.Correlation == "" {
+		cfg.Correlation = "0%"
+	}
+	if cfg.Duplicate == "" {
+		cfg.Duplicate = "0%"
+	}
+	if cfg.Reorder == "" {
+		cfg.Reorder = "0%"
+	}
+
+	// tc qdisc replace works whether a qdisc exists or not.
+	args := []string{
+		"qdisc", "replace", "dev", cfg.Interface, "root", "netem",
+		"delay", cfg.Delay, cfg.Jitter, cfg.Correlation,
+		"loss", cfg.Loss,
+		"duplicate", cfg.Duplicate,
+		"reorder", cfg.Reorder,
+	}
+
+	log.Printf("[TC] node=%d applying: tc %s", tm.nodeID, strings.Join(args, " "))
+	cmd := exec.Command("tc", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[TC] node=%d ERROR: %v – %s", tm.nodeID, err, string(out))
+		return fmt.Errorf("tc command failed: %v – %s", err, string(out))
+	}
+
+	tm.current = cfg
+	log.Printf("[TC] node=%d applied: delay=%s jitter=%s loss=%s corr=%s dup=%s reorder=%s",
+		tm.nodeID, cfg.Delay, cfg.Jitter, cfg.Loss, cfg.Correlation, cfg.Duplicate, cfg.Reorder)
+	return nil
+}
+
+// Remove deletes all netem rules from the interface.
+func (tm *TCManager) Remove() error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	iface := tm.current.Interface
+	if iface == "" {
+		iface = "eth0"
+	}
+
+	cmd := exec.Command("tc", "qdisc", "del", "dev", iface, "root")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[TC] node=%d remove WARNING: %v – %s", tm.nodeID, err, string(out))
+		return fmt.Errorf("tc delete failed: %v – %s", err, string(out))
+	}
+
+	tm.current = TCConfig{Interface: iface}
+	log.Printf("[TC] node=%d all netem rules removed on %s", tm.nodeID, iface)
+	return nil
+}
+
+// Current returns a copy of the active TC config.
+func (tm *TCManager) Current() TCConfig {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.current
+}
+
+// ShowRaw returns the raw `tc qdisc show` output.
+func (tm *TCManager) ShowRaw() (string, error) {
+	iface := tm.current.Interface
+	if iface == "" {
+		iface = "eth0"
+	}
+	cmd := exec.Command("tc", "qdisc", "show", "dev", iface)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("tc show failed: %v – %s", err, string(out))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
 
 func main() {
 	var (
@@ -129,6 +259,69 @@ func main() {
 	// ── HTTP API + Prometheus metrics server ─────────────────────────
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+
+	// ── Traffic Control runtime endpoint ─────────────────────────────
+	tcMgr := NewTCManager(id)
+
+	mux.HandleFunc("/tc", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.Method {
+		case http.MethodGet:
+			// Show current TC config + raw tc output.
+			raw, _ := tcMgr.ShowRaw()
+			resp := map[string]interface{}{
+				"node_id": id,
+				"config":  tcMgr.Current(),
+				"raw":     raw,
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case http.MethodPost:
+			// Apply new TC rules.
+			var cfg TCConfig
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				http.Error(w, `{"error":"bad request: `+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+			if err := tcMgr.Apply(cfg); err != nil {
+				resp := map[string]interface{}{
+					"success": false,
+					"error":   err.Error(),
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+			resp := map[string]interface{}{
+				"success": true,
+				"node_id": id,
+				"applied": tcMgr.Current(),
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case http.MethodDelete:
+			// Remove all TC rules.
+			if err := tcMgr.Remove(); err != nil {
+				resp := map[string]interface{}{
+					"success": false,
+					"error":   err.Error(),
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+			resp := map[string]interface{}{
+				"success": true,
+				"node_id": id,
+				"message": "all netem rules removed",
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+
+		default:
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	})
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

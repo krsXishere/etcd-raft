@@ -20,6 +20,7 @@
 # Variables (see .env for defaults):
 #   TC_DELAY_HUB / TC_JITTER_HUB / TC_LOSS_HUB / TC_CORRELATION_HUB
 #   TC_DELAY_REMOTE / TC_JITTER_REMOTE / TC_LOSS_REMOTE / TC_CORRELATION_REMOTE
+#   BASELINE_RTT / T_BASE / T_MIN / T_MAX / KP / KI
 #   WORKLOAD_PATTERN / BENCHMARK_RATE / BENCHMARK_BURST_RATE / etc.
 #
 # Ports exposed on host:
@@ -60,6 +61,12 @@ services:
       TC_JITTER: "${TC_JITTER_HUB:-1ms}"
       TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
       TC_CORRELATION: "${TC_CORRELATION_HUB:-25%}"
+      BASELINE_RTT: "${BASELINE_RTT:-50ms}"
+      T_BASE: "${T_BASE:-1s}"
+      T_MIN: "${T_MIN:-500ms}"
+      T_MAX: "${T_MAX:-5s}"
+      KP: "${KP:-1.5}"
+      KI: "${KI:-0.2}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -91,6 +98,12 @@ services:
       TC_JITTER: "${TC_JITTER_HUB:-1ms}"
       TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
       TC_CORRELATION: "${TC_CORRELATION_HUB:-25%}"
+      BASELINE_RTT: "${BASELINE_RTT:-50ms}"
+      T_BASE: "${T_BASE:-1s}"
+      T_MIN: "${T_MIN:-500ms}"
+      T_MAX: "${T_MAX:-5s}"
+      KP: "${KP:-1.5}"
+      KI: "${KI:-0.2}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -122,6 +135,12 @@ services:
       TC_JITTER: "${TC_JITTER_HUB:-1ms}"
       TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
       TC_CORRELATION: "${TC_CORRELATION_HUB:-25%}"
+      BASELINE_RTT: "${BASELINE_RTT:-50ms}"
+      T_BASE: "${T_BASE:-1s}"
+      T_MIN: "${T_MIN:-500ms}"
+      T_MAX: "${T_MAX:-5s}"
+      KP: "${KP:-1.5}"
+      KI: "${KI:-0.2}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -153,6 +172,12 @@ services:
       TC_JITTER: "${TC_JITTER_REMOTE:-3ms}"
       TC_LOSS: "${TC_LOSS_REMOTE:-0.1%}"
       TC_CORRELATION: "${TC_CORRELATION_REMOTE:-25%}"
+      BASELINE_RTT: "${BASELINE_RTT:-50ms}"
+      T_BASE: "${T_BASE:-1s}"
+      T_MIN: "${T_MIN:-500ms}"
+      T_MAX: "${T_MAX:-5s}"
+      KP: "${KP:-1.5}"
+      KI: "${KI:-0.2}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -184,6 +209,12 @@ services:
       TC_JITTER: "${TC_JITTER_REMOTE:-3ms}"
       TC_LOSS: "${TC_LOSS_REMOTE:-0.1%}"
       TC_CORRELATION: "${TC_CORRELATION_REMOTE:-25%}"
+      BASELINE_RTT: "${BASELINE_RTT:-50ms}"
+      T_BASE: "${T_BASE:-1s}"
+      T_MIN: "${T_MIN:-500ms}"
+      T_MAX: "${T_MAX:-5s}"
+      KP: "${KP:-1.5}"
+      KI: "${KI:-0.2}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
