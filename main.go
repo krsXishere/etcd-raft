@@ -277,6 +277,9 @@ func main() {
 	// ── Traffic Control runtime endpoint ─────────────────────────────
 	tcMgr := NewTCManager(id)
 
+	// ── FOPDT Step Response Test runner ──────────────────────────────
+	stepRunner := NewStepTestRunner(id, node, tcMgr)
+
 	mux.HandleFunc("/tc", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -336,6 +339,10 @@ func main() {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		}
 	})
+
+	// ── FOPDT Step Response Test endpoint ────────────────────────────
+	mux.HandleFunc("/step-test", stepRunner.HandleStepTest)
+	mux.HandleFunc("/step-test/samples", stepRunner.HandleStepTestSamples)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

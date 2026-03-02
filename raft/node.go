@@ -748,3 +748,12 @@ func (n *Node) CurrentTerm() uint64 {
 	defer n.mu.Unlock()
 	return n.currentTerm
 }
+
+// GetAverageRTT returns the current aggregate RTT average across all peers.
+// On a leader this reflects actual measured RTT; on a follower it returns
+// the baseline RTT (no heartbeat measurements available).
+func (n *Node) GetAverageRTT() time.Duration {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.aggregateRTT()
+}
