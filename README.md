@@ -1,15 +1,16 @@
-# Adaptive Raft – PI-Controlled Election Timeout
+# Adaptive Raft – PID-Controlled Election Timeout
 
-A 5-node Raft consensus cluster in Go where each node runs a PI (Proportional-Integral) controller that adaptively tunes the election timeout based on observed round-trip time (RTT) to peers.
+A 5-node Raft consensus cluster in Go where each node runs a PID (Proportional-Integral-Derivative) controller that adaptively tunes the election timeout based on observed round-trip time (RTT) to peers. The adaptive mode can be toggled on/off — when disabled, the cluster runs with static (fixed) timeouts.
 
 ## Overview
 
-This project demonstrates an **observability-driven approach** to Raft in geo-dispersed or high-variance latency environments. Instead of fixed timeouts, each node independently monitors RTT to its peers and feeds the moving average into a lightweight PI controller that adjusts the election timeout in real time.
+This project demonstrates an **observability-driven approach** to Raft in geo-dispersed or high-variance latency environments. Instead of fixed timeouts, each node independently monitors RTT to its peers and feeds the moving average into a lightweight PID controller that adjusts the election timeout in real time.
 
 ### Key Features
 
 - **Full Raft Implementation**: Leader election, log replication, term logic, majority voting, safety guarantees untouched
-- **Adaptive Control**: PI controller computes `electionTimeout = T_base + Kp·error + Ki·∫error`, clamped to `[T_min, T_max]`
+- **Adaptive / Static Toggle**: Set `ADAPTIVE_MODE=true` for PID-controlled timeouts, or `false` for fixed (static) Raft
+- **Adaptive Control**: PID controller computes `electionTimeout = T_base + Kp·error + Ki·∫error + Kd·dError/dt`, clamped to `[T_min, T_max]`
 - **Heartbeat Derivation**: `heartbeatInterval = electionTimeout / R` (default R=5), always derived—never independently tuned
 - **RTT Measurement**: Measured from actual HTTP RPC latency; per-peer sliding window computes moving average
 - **Back-Calculation Anti-Windup**: Prevents integral term from accumulating unsustainable error when output is saturated
@@ -23,7 +24,7 @@ etcd-raft/
 ├── main.go               # CLI entry point, flag parsing
 ├── start_cluster.sh      # Launch script for all 5 nodes
 ├── controller/
-│   └── controller.go     # PIController: Update, Reset, GetElectionTimeout
+│   └── controller.go     # PIDController: Update, Reset, GetElectionTimeout
 ├── metrics/
 │   └── metrics.go        # Observer interface, RTTWindow, LogObserver
 ├── raft/
@@ -90,14 +91,6 @@ Deploy across multiple regions for testing adaptive timeout under real latency c
 | node-3 | ap-southeast-1 | 18.142.47.197   |
 | node-4 | eu-central-1   | 3.66.155.203    |
 | node-5 | ca-central-1   | 35.183.136.44   |
-=======
-| Node   | Region         | Public IP     |
-| ------ | -------------- | ------------- |
-| node-1 | us-east-1      | 3.88.170.115  |
-| node-2 | ap-southeast-3 | 52.53.252.250 |
-| node-3 | ap-southeast-1 | 18.142.47.197 |
-| node-4 | eu-central-1   | 3.66.155.203  |
-| node-5 | ca-central-1   | 35.183.136.44 |
 
 #### Launch Node 1 (us-east-1)
 
@@ -185,12 +178,14 @@ Deploy across multiple regions for testing adaptive timeout under real latency c
 | `-id`           | —        | Unique node ID (1–5, required)                        |
 | `-port`         | —        | Listen port (required)                                |
 | `-peers`        | —        | Peer list: `id=host:port,id=host:port,...` (required) |
+| `-adaptive`     | `false`  | Enable adaptive PID-controlled election timeout       |
 | `-baseline-rtt` | `5ms`    | Expected "normal" round-trip time                     |
 | `-t-base`       | `300ms`  | Base election timeout (before correction)             |
 | `-t-min`        | `150ms`  | Minimum election timeout bound                        |
 | `-t-max`        | `3000ms` | Maximum election timeout bound                        |
 | `-kp`           | `2.0`    | Proportional gain                                     |
 | `-ki`           | `0.5`    | Integral gain                                         |
+| `-kd`           | `0.1`    | Derivative gain                                       |
 | `-ratio`        | `5.0`    | Heartbeat ratio (R)                                   |
 | `-rtt-window`   | `20`     | RTT sliding window size (samples)                     |
 
@@ -209,6 +204,37 @@ go run main.go \
   -t-max 5s
 ```
 
+### Docker Compose: Adaptive vs Static Mode
+
+Toggle via `.env` or command-line override:
+
+```bash
+# Adaptive mode (PID enabled, default):
+ADAPTIVE_MODE=true docker compose up --build
+
+# Static mode (fixed election timeout, no PID):
+ADAPTIVE_MODE=false docker compose up --build
+
+# Static mode with custom fixed timeout:
+ADAPTIVE_MODE=false T_BASE=2s docker compose up --build
+```
+
+### Environment Variables (`.env`)
+
+| Variable           | Default  | Description                                  |
+| ------------------ | -------- | -------------------------------------------- |
+| `ADAPTIVE_MODE`    | `true`   | `true` = PID adaptive, `false` = static Raft |
+| `BASELINE_RTT`     | `50ms`   | Expected baseline RTT (adaptive only)        |
+| `T_BASE`           | `1s`     | Base election timeout                        |
+| `T_MIN`            | `500ms`  | Minimum election timeout                     |
+| `T_MAX`            | `5s`     | Maximum election timeout                     |
+| `KP`               | `1.5`    | Proportional gain (adaptive only)            |
+| `KI`               | `0.2`    | Integral gain (adaptive only)                |
+| `KD`               | `0.1`    | Derivative gain (adaptive only)              |
+| `TC_DELAY_HUB`     | `2ms`    | TC delay for hub nodes (Jakarta)             |
+| `TC_DELAY_REMOTE`  | `10ms`   | TC delay for remote nodes                    |
+| `WORKLOAD_PATTERN` | `steady` | Benchmark pattern (`steady` / `bursty`)      |
+
 ## How It Works
 
 ### 1. RTT Sampling
@@ -217,13 +243,14 @@ Every time a node sends an RPC (heartbeat or vote request) to a peer, the transp
 
 ### 2. Aggregation
 
-The node computes a moving average across all peer RTT windows and feeds this into the PI controller.
+The node computes a moving average across all peer RTT windows and feeds this into the PID controller.
 
-### 3. PI Control
+### 3. PID Control
 
 ```
 error        = moving_avg_RTT − baseline_RTT
-raw_output   = T_base + Kp·error + Ki·∫error
+derivative   = low_pass_filter(Δerror / Δt)
+raw_output   = T_base + Kp·error + Ki·∫error + Kd·derivative
 clamped      = clamp(raw_output, T_min, T_max)
 integral     = back_calculate_for_antiwindup(clamped, error)
 ```
@@ -353,7 +380,7 @@ nodeCfg := raft.Config{
 
 ## Design Principles
 
-1. **Simplicity**: No external ML. Just a straightforward PI controller with anti-windup.
+1. **Simplicity**: No external ML. Just a straightforward PID controller with anti-windup.
 2. **Safety First**: Raft invariants (term, voting, quorum) are never modified by the controller.
 3. **Local Control**: Each node runs its own controller; no centralized tuning.
 4. **Production-Ready Foundations**: Proper locking, graceful shutdown, structured logging.
@@ -426,5 +453,5 @@ MIT
 ## References
 
 - [Raft Consensus Algorithm](https://raft.github.io/)
-- [PI Controller Tuning](https://en.wikipedia.org/wiki/Proportional%E2%80%93integral_controller)
+- [PID Controller Tuning](https://en.wikipedia.org/wiki/PID_controller)
 - [Anti-Windup Techniques](https://en.wikipedia.org/wiki/Integral_windup)

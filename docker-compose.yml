@@ -20,7 +20,8 @@
 # Variables (see .env for defaults):
 #   TC_DELAY_HUB / TC_JITTER_HUB / TC_LOSS_HUB / TC_CORRELATION_HUB
 #   TC_DELAY_REMOTE / TC_JITTER_REMOTE / TC_LOSS_REMOTE / TC_CORRELATION_REMOTE
-#   BASELINE_RTT / T_BASE / T_MIN / T_MAX / KP / KI
+#   ADAPTIVE_MODE  (true = PID adaptive, false = static Raft)
+#   BASELINE_RTT / T_BASE / T_MIN / T_MAX / KP / KI / KD
 #   WORKLOAD_PATTERN / BENCHMARK_RATE / BENCHMARK_BURST_RATE / etc.
 #
 # Ports exposed on host:
@@ -57,6 +58,7 @@ services:
       NODE_PORT: "9001"
       METRICS_PORT: "9200"
       PEERS: "2=node2:9002,3=node3:9003,4=node4:9004,5=node5:9005"
+      ADAPTIVE_MODE: "${ADAPTIVE_MODE:-true}"
       TC_DELAY: "${TC_DELAY_HUB:-2ms}"
       TC_JITTER: "${TC_JITTER_HUB:-1ms}"
       TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
@@ -67,6 +69,7 @@ services:
       T_MAX: "${T_MAX:-5s}"
       KP: "${KP:-1.5}"
       KI: "${KI:-0.2}"
+      KD: "${KD:-0.1}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -94,6 +97,7 @@ services:
       NODE_PORT: "9002"
       METRICS_PORT: "9200"
       PEERS: "1=node1:9001,3=node3:9003,4=node4:9004,5=node5:9005"
+      ADAPTIVE_MODE: "${ADAPTIVE_MODE:-true}"
       TC_DELAY: "${TC_DELAY_HUB:-2ms}"
       TC_JITTER: "${TC_JITTER_HUB:-1ms}"
       TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
@@ -104,6 +108,7 @@ services:
       T_MAX: "${T_MAX:-5s}"
       KP: "${KP:-1.5}"
       KI: "${KI:-0.2}"
+      KD: "${KD:-0.1}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -131,6 +136,7 @@ services:
       NODE_PORT: "9003"
       METRICS_PORT: "9200"
       PEERS: "1=node1:9001,2=node2:9002,4=node4:9004,5=node5:9005"
+      ADAPTIVE_MODE: "${ADAPTIVE_MODE:-true}"
       TC_DELAY: "${TC_DELAY_HUB:-2ms}"
       TC_JITTER: "${TC_JITTER_HUB:-1ms}"
       TC_LOSS: "${TC_LOSS_HUB:-0.1%}"
@@ -141,6 +147,7 @@ services:
       T_MAX: "${T_MAX:-5s}"
       KP: "${KP:-1.5}"
       KI: "${KI:-0.2}"
+      KD: "${KD:-0.1}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -168,6 +175,7 @@ services:
       NODE_PORT: "9004"
       METRICS_PORT: "9200"
       PEERS: "1=node1:9001,2=node2:9002,3=node3:9003,5=node5:9005"
+      ADAPTIVE_MODE: "${ADAPTIVE_MODE:-true}"
       TC_DELAY: "${TC_DELAY_REMOTE:-10ms}"
       TC_JITTER: "${TC_JITTER_REMOTE:-3ms}"
       TC_LOSS: "${TC_LOSS_REMOTE:-0.1%}"
@@ -178,6 +186,7 @@ services:
       T_MAX: "${T_MAX:-5s}"
       KP: "${KP:-1.5}"
       KI: "${KI:-0.2}"
+      KD: "${KD:-0.1}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s
@@ -205,6 +214,7 @@ services:
       NODE_PORT: "9005"
       METRICS_PORT: "9200"
       PEERS: "1=node1:9001,2=node2:9002,3=node3:9003,4=node4:9004"
+      ADAPTIVE_MODE: "${ADAPTIVE_MODE:-true}"
       TC_DELAY: "${TC_DELAY_REMOTE:-10ms}"
       TC_JITTER: "${TC_JITTER_REMOTE:-3ms}"
       TC_LOSS: "${TC_LOSS_REMOTE:-0.1%}"
@@ -215,6 +225,7 @@ services:
       T_MAX: "${T_MAX:-5s}"
       KP: "${KP:-1.5}"
       KI: "${KI:-0.2}"
+      KD: "${KD:-0.1}"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9200/health"]
       interval: 5s

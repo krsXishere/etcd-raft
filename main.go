@@ -161,6 +161,7 @@ func main() {
 		id          uint64
 		port        int
 		peersFlag   string
+		adaptive    bool
 		baselineRTT time.Duration
 		tBase       time.Duration
 		tMin        time.Duration
@@ -177,6 +178,7 @@ func main() {
 	flag.IntVar(&port, "port", 0, "Listen port for this node")
 	flag.StringVar(&peersFlag, "peers", "", "Comma-separated peer list: id=host:port,...")
 	flag.IntVar(&metricsPort, "metric-port", 9200, "Port for Prometheus metrics endpoint")
+	flag.BoolVar(&adaptive, "adaptive", false, "Enable adaptive PID-controlled election timeout")
 	flag.DurationVar(&baselineRTT, "baseline-rtt", 5*time.Millisecond, "Expected baseline RTT")
 	flag.DurationVar(&tBase, "t-base", 300*time.Millisecond, "Base election timeout")
 	flag.DurationVar(&tMin, "t-min", 150*time.Millisecond, "Minimum election timeout")
@@ -212,6 +214,18 @@ func main() {
 	}
 
 	listenAddr := fmt.Sprintf("0.0.0.0:%d", port)
+
+	// ── Mode selection: adaptive (PID) vs static (fixed timeout) ────
+	if !adaptive {
+		// Static mode: zero out PID gains so controller always outputs T_base.
+		log.Printf("[main] STATIC MODE: election timeout fixed at %v (PID disabled)", tBase)
+		kp = 0
+		ki = 0
+		kd = 0
+	} else {
+		log.Printf("[main] ADAPTIVE MODE: PID enabled (Kp=%.2f Ki=%.2f Kd=%.2f baseline=%v)",
+			kp, ki, kd, baselineRTT)
+	}
 
 	ctrlCfg := controller.Config{
 		BaselineRTT:    baselineRTT,
@@ -329,8 +343,13 @@ func main() {
 	})
 
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		mode := "static"
+		if adaptive {
+			mode = "adaptive"
+		}
 		status := map[string]interface{}{
 			"id":        id,
+			"mode":      mode,
 			"role":      node.RoleString(),
 			"leader_id": node.LeaderID(),
 			"term":      node.CurrentTerm(),

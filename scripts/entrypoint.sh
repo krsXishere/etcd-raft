@@ -41,24 +41,42 @@ else
     echo "[TC] No traffic control applied (TC_DELAY=${TC_DELAY})"
 fi
 
+ADAPTIVE_MODE="${ADAPTIVE_MODE:-true}"
 BASELINE_RTT="${BASELINE_RTT:-50ms}"
 T_BASE="${T_BASE:-1s}"
 T_MIN="${T_MIN:-500ms}"
 T_MAX="${T_MAX:-5s}"
 KP="${KP:-1.5}"
 KI="${KI:-0.2}"
+KD="${KD:-0.1}"
 
 echo "[entrypoint] Starting adaptive-raft node..."
-echo "[PI] node=${NODE_ID} baseline-rtt=${BASELINE_RTT} t-base=${T_BASE} t-min=${T_MIN} t-max=${T_MAX} kp=${KP} ki=${KI}"
-exec /app/adaptive-raft \
-    -id "$NODE_ID" \
-    -port "$NODE_PORT" \
-    -metric-port "$METRICS_PORT" \
-    -peers "$PEERS" \
-    -baseline-rtt "$BASELINE_RTT" \
-    -t-base "$T_BASE" \
-    -t-min "$T_MIN" \
-    -t-max "$T_MAX" \
-    -kp "$KP" \
-    -ki "$KI" \
-    "$@"
+
+if [ "$ADAPTIVE_MODE" = "true" ]; then
+    echo "[MODE] ADAPTIVE (PID) node=${NODE_ID} baseline-rtt=${BASELINE_RTT} t-base=${T_BASE} t-min=${T_MIN} t-max=${T_MAX} kp=${KP} ki=${KI} kd=${KD}"
+    exec /app/adaptive-raft \
+        -id "$NODE_ID" \
+        -port "$NODE_PORT" \
+        -metric-port "$METRICS_PORT" \
+        -peers "$PEERS" \
+        -adaptive \
+        -baseline-rtt "$BASELINE_RTT" \
+        -t-base "$T_BASE" \
+        -t-min "$T_MIN" \
+        -t-max "$T_MAX" \
+        -kp "$KP" \
+        -ki "$KI" \
+        -kd "$KD" \
+        "$@"
+else
+    echo "[MODE] STATIC node=${NODE_ID} t-base=${T_BASE} (fixed election timeout, PID disabled)"
+    exec /app/adaptive-raft \
+        -id "$NODE_ID" \
+        -port "$NODE_PORT" \
+        -metric-port "$METRICS_PORT" \
+        -peers "$PEERS" \
+        -t-base "$T_BASE" \
+        -t-min "$T_MIN" \
+        -t-max "$T_MAX" \
+        "$@"
+fi
