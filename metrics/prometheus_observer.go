@@ -19,7 +19,9 @@ type PrometheusObserver struct {
 //
 // Sumber data  : RecordRTT(), RecordControllerOutput()
 // Fungsi       : Mengukur bagaimana PID controller menyesuaikan election
-//                timeout & heartbeat berdasarkan kondisi jaringan (RTT).
+//
+//	timeout & heartbeat berdasarkan kondisi jaringan (RTT).
+//
 // ============================================================================
 var (
 	// Gauge: RTT mentah ke setiap peer (ms)
@@ -102,7 +104,8 @@ var (
 // Sumber data  : RecordCommit()
 // Fungsi       : Mengukur jumlah log entries yang berhasil di-commit.
 // Catatan      : Untuk proposal/sec dan success rate, gunakan recording rule
-//                dari histogram Cluster 3 (_count suffix).
+//
+//	dari histogram Cluster 3 (_count suffix).
 //
 // Grafana      : rate(raft_throughput_committed_entries_total[1m])
 // ============================================================================
@@ -122,9 +125,12 @@ var (
 //
 // Sumber data  : RecordProposalLatency()
 // Fungsi       : Mengukur waktu proposal → commit. Label status membedakan
-//                sukses/gagal. P95/P99 dihitung via recording rule.
+//
+//	sukses/gagal. P95/P99 dihitung via recording rule.
+//
 // Bonus        : _count suffix otomatis jadi proposals_committed / proposals_failed
-//                sehingga tidak perlu counter terpisah.
+//
+//	sehingga tidak perlu counter terpisah.
 //
 // Grafana      : histogram_quantile(0.99, rate(raft_consensus_proposal_latency_seconds_bucket{status="success"}[5m]))
 // ============================================================================
@@ -146,7 +152,8 @@ var (
 // Sumber data  : RecordTuningDuration()
 // Fungsi       : Membuktikan bahwa PID controller ringan (low overhead).
 // Built-in     : process_cpu_seconds_total dan go_memstats_alloc_bytes
-//                sudah otomatis tersedia dari promhttp.Handler().
+//
+//	sudah otomatis tersedia dari promhttp.Handler().
 //
 // Grafana      : histogram_quantile(0.99, rate(raft_overhead_tuning_duration_seconds_bucket[5m]))
 // ============================================================================
@@ -166,7 +173,9 @@ var (
 // Cluster 5 — Role & State Tracking (4 metrik)
 //
 // Sumber data  : RecordRoleChange(), RecordElectionDuration(),
-//                RecordControllerOutput() (untuk term & role)
+//
+//	RecordControllerOutput() (untuk term & role)
+//
 // Fungsi       : Melacak role, term, frekuensi pergantian, dan durasi election.
 // ============================================================================
 var (
@@ -217,6 +226,27 @@ var (
 		Help:      "Distribution of leader election duration in seconds",
 		Buckets:   []float64{0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0},
 	}, []string{"node_id"})
+)
+
+// ============================================================================
+// Cluster 6 — Heartbeat Tracking (1 metrik)
+//
+// Sumber data  : RecordHeartbeatReceived()
+// Fungsi       : Menghitung jumlah heartbeat yang berhasil diterima follower.
+//
+//	Berguna untuk membandingkan perilaku static vs adaptive mode.
+//
+// Grafana      : rate(raft_state_heartbeats_received_total[1m])
+// ============================================================================
+var (
+	// Counter: total heartbeat yang berhasil diterima dari leader
+	// ← RecordHeartbeatReceived(leaderID) — increment per heartbeat sukses
+	heartbeatsReceivedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "raft",
+		Subsystem: "state",
+		Name:      "heartbeats_received_total",
+		Help:      "Total heartbeats successfully received by this follower",
+	}, []string{"node_id", "leader_id"})
 )
 
 // ============================================================================
@@ -284,6 +314,11 @@ func (p *PrometheusObserver) RecordRoleChange(role RaftRole, term uint64) {
 
 func (p *PrometheusObserver) RecordElectionDuration(duration time.Duration) {
 	leaderElectionDurationHistogram.WithLabelValues(p.nodeLabel).Observe(duration.Seconds())
+}
+
+func (p *PrometheusObserver) RecordHeartbeatReceived(leaderID uint64) {
+	leaderLabel := strconv.FormatUint(leaderID, 10)
+	heartbeatsReceivedTotal.WithLabelValues(p.nodeLabel, leaderLabel).Inc()
 }
 
 // updateRoleMetrics sets the node_role gauge labels.

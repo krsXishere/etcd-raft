@@ -560,6 +560,10 @@ func (n *Node) handleAppendEntries(msg transport.Message) *transport.Message {
 
 	reply.Success = true
 	reply.MatchIndex = n.log[len(n.log)-1].Index
+
+	// Record successful heartbeat reception for Prometheus tracking.
+	n.observer.RecordHeartbeatReceived(msg.From)
+
 	return reply
 }
 

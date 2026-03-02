@@ -44,6 +44,11 @@ type Observer interface {
 	//         RecordElectionDuration dipanggil dari node.becomeLeader
 	RecordRoleChange(role RaftRole, term uint64)
 	RecordElectionDuration(duration time.Duration)
+
+	// ── Cluster 6: Heartbeat Tracking ──
+	// Sumber: RecordHeartbeatReceived dipanggil dari node.handleAppendEntries
+	//         saat follower berhasil memproses heartbeat dari leader.
+	RecordHeartbeatReceived(leaderID uint64)
 }
 
 // ControllerSnapshot holds all the values the PID controller computed during
@@ -121,6 +126,12 @@ func (o *LogObserver) RecordElectionDuration(duration time.Duration) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	log.Printf("[node=%d] election_duration duration=%s", o.nodeID, duration)
+}
+
+func (o *LogObserver) RecordHeartbeatReceived(leaderID uint64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	log.Printf("[node=%d] heartbeat_received leader=%d", o.nodeID, leaderID)
 }
 
 // --------------------------------------------------------------------------

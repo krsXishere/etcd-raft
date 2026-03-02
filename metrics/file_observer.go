@@ -108,6 +108,13 @@ func (o *FileObserver) RecordElectionDuration(duration time.Duration) {
 		time.Now().Format("2006/01/02 15:04:05.000000"), o.nodeID, duration)
 }
 
+func (o *FileObserver) RecordHeartbeatReceived(leaderID uint64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Fprintf(o.file, "%s [node=%d] heartbeat_received leader=%d\n",
+		time.Now().Format("2006/01/02 15:04:05.000000"), o.nodeID, leaderID)
+}
+
 // --------------------------------------------------------------------------
 // MultiObserver – fan-out to multiple backends
 // --------------------------------------------------------------------------
@@ -161,5 +168,11 @@ func (m *MultiObserver) RecordProposalLatency(latency time.Duration, success boo
 func (m *MultiObserver) RecordElectionDuration(duration time.Duration) {
 	for _, o := range m.observers {
 		o.RecordElectionDuration(duration)
+	}
+}
+
+func (m *MultiObserver) RecordHeartbeatReceived(leaderID uint64) {
+	for _, o := range m.observers {
+		o.RecordHeartbeatReceived(leaderID)
 	}
 }
