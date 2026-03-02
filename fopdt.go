@@ -185,9 +185,24 @@ type StepTestRunner struct {
 
 // NewStepTestRunner creates a new step test runner.
 func NewStepTestRunner(nodeID uint64, node *raft.Node, tcMgr *TCManager) *StepTestRunner {
+	label := strconv.FormatUint(nodeID, 10)
+
+	// Pre-initialize all FOPDT gauges so they appear in /metrics immediately
+	// (Prometheus GaugeVec only emits a time series after WithLabelValues is called).
+	fopdtStepActive.WithLabelValues(label).Set(0)
+	fopdtStepPhase.WithLabelValues(label).Set(0)
+	fopdtStepInputMs.WithLabelValues(label).Set(0)
+	fopdtStepMagnitudeMs.WithLabelValues(label).Set(0)
+	fopdtRTTSampleMs.WithLabelValues(label).Set(0)
+	fopdtGainK.WithLabelValues(label).Set(0)
+	fopdtDeadTimeMs.WithLabelValues(label).Set(0)
+	fopdtTimeConstantMs.WithLabelValues(label).Set(0)
+	fopdtRTTInitialMs.WithLabelValues(label).Set(0)
+	fopdtRTTFinalMs.WithLabelValues(label).Set(0)
+
 	return &StepTestRunner{
 		nodeID:    nodeID,
-		nodeLabel: strconv.FormatUint(nodeID, 10),
+		nodeLabel: label,
 		node:      node,
 		tcMgr:     tcMgr,
 		phase:     "idle",
