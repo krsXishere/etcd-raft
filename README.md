@@ -90,6 +90,14 @@ Deploy across multiple regions for testing adaptive timeout under real latency c
 | node-3 | ap-southeast-1 | 18.142.47.197   |
 | node-4 | eu-central-1   | 3.66.155.203    |
 | node-5 | ca-central-1   | 35.183.136.44   |
+=======
+| Node   | Region         | Public IP     |
+| ------ | -------------- | ------------- |
+| node-1 | us-east-1      | 3.88.170.115  |
+| node-2 | ap-southeast-3 | 52.53.252.250 |
+| node-3 | ap-southeast-1 | 18.142.47.197 |
+| node-4 | eu-central-1   | 3.66.155.203  |
+| node-5 | ca-central-1   | 35.183.136.44 |
 
 #### Launch Node 1 (us-east-1)
 
@@ -241,6 +249,86 @@ By default, the node logs to stdout with structured entries:
 [node=2] rtt peer=1 rtt=4.98ms
 [node=1] role_change role=leader term=1
 ```
+
+### Runtime Traffic Control API
+
+Each node exposes a `/tc` endpoint (on the metrics port, default `9200`) that allows you to query and dynamically apply Linux traffic control rules **without restarting the node**. This enables realistic network condition emulation during live cluster experiments.
+
+#### GET `/tc` – Query Current TC State
+
+```bash
+curl http://localhost:9201/tc
+```
+
+Response:
+
+```json
+{
+  "node_id": 1,
+  "config": {
+    "delay": "2ms",
+    "jitter": "1ms",
+    "loss": "0.1%",
+    "correlation": "25%",
+    "duplicate": "0%",
+    "reorder": "0%",
+    "interface": "eth0"
+  },
+  "raw": "qdisc netem 8001: root refcnt 2 limit 1000 delay 2ms 1ms 25% loss 0.1%"
+}
+```
+
+#### POST `/tc` – Apply New TC Rules
+
+Apply new network conditions on-the-fly:
+
+```bash
+curl -X POST http://localhost:9204/tc \
+  -H "Content-Type: application/json" \
+  -d '{
+    "delay": "150ms",
+    "jitter": "50ms",
+    "loss": "2%",
+    "correlation": "25%",
+    "interface": "eth0"
+  }'
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "node_id": 4,
+  "applied": {
+    "delay": "150ms",
+    "jitter": "50ms",
+    "loss": "2%",
+    "correlation": "25%",
+    "duplicate": "0%",
+    "reorder": "0%",
+    "interface": "eth0"
+  }
+}
+```
+
+#### DELETE `/tc` – Remove All TC Rules
+
+```bash
+curl -X DELETE http://localhost:9204/tc
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "node_id": 4,
+  "message": "all netem rules removed"
+}
+```
+
+**Use case**: Start the cluster with normal conditions, then POST to `/tc` on specific nodes to degrade their outgoing links. Observe how the PI controller adapts election timeouts in response to changing latency profiles.
 
 ### Custom Metrics Backend
 
