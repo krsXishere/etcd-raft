@@ -13,7 +13,7 @@ RUN go mod download
 
 # Copy source and build both binaries
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o adaptive-raft main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o adaptive-raft .
 RUN CGO_ENABLED=0 GOOS=linux go build -o benchmark   cmd/benchmark/main.go
 
 ##############################################
