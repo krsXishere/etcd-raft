@@ -157,6 +157,9 @@ func (n *Node) Start() error {
 
 	n.resetElectionTimer()
 
+	// Emit initial controller state so Prometheus has metrics from startup.
+	n.emitControllerSnapshot()
+
 	n.wg.Add(1)
 	go n.tickerLoop()
 
@@ -355,6 +358,7 @@ func (n *Node) becomeLeader() {
 	}
 
 	n.ctrl.Reset()
+	n.emitControllerSnapshot() // update Prometheus with reset values
 	n.resetHeartbeatTimer()
 	// Immediately send heartbeat.
 	n.broadcastAppendEntries()
@@ -380,6 +384,7 @@ func (n *Node) becomeFollower(term uint64) {
 	}
 
 	n.resetElectionTimer()
+	n.emitControllerSnapshot() // keep Prometheus in sync
 }
 
 // --------------------------------------------------------------------
@@ -612,15 +617,11 @@ func (n *Node) advanceCommitIndex() {
 // RTT / Controller integration
 // --------------------------------------------------------------------
 
-func (n *Node) recordRTT(peerID uint64, rtt time.Duration) {
-	if w, ok := n.rttWin[peerID]; ok {
-		w.Add(rtt)
-	}
-	n.observer.RecordRTT(peerID, rtt)
-
+// emitControllerSnapshot publishes the current controller state to all
+// observers (including Prometheus).  Called at startup and after reset
+// so that metrics are always available, even in static mode.
+func (n *Node) emitControllerSnapshot() {
 	avgRTT := n.aggregateRTT()
-	n.ctrl.Update(avgRTT)
-
 	n.observer.RecordControllerOutput(metrics.ControllerSnapshot{
 		Timestamp:         time.Now(),
 		NodeID:            n.id,
@@ -633,6 +634,18 @@ func (n *Node) recordRTT(peerID uint64, rtt time.Duration) {
 		HeartbeatInterval: n.ctrl.GetHeartbeatInterval(),
 		Term:              n.currentTerm,
 	})
+}
+
+func (n *Node) recordRTT(peerID uint64, rtt time.Duration) {
+	if w, ok := n.rttWin[peerID]; ok {
+		w.Add(rtt)
+	}
+	n.observer.RecordRTT(peerID, rtt)
+
+	avgRTT := n.aggregateRTT()
+	n.ctrl.Update(avgRTT)
+
+	n.emitControllerSnapshot()
 }
 
 func (n *Node) feedRTTs(rtts map[uint64]time.Duration) {
