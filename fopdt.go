@@ -197,11 +197,12 @@ type StepTestRunner struct {
 	stopCh    chan struct{} // signal to abort a running test
 
 	// ── Live FOPDT estimation (from /tc changes) ────────────────
-	liveMu     sync.Mutex
-	liveWindow []liveSample   // sliding window of recent RTT samples
-	liveInput  float64        // current TC input (ms), 0 = unknown
-	liveStep   *liveStepEvent // pending step event waiting for settle
-	liveResult *FOPDTResult   // latest live-computed FOPDT result
+	liveMu       sync.Mutex
+	liveWindow   []liveSample   // sliding window of recent RTT samples
+	liveInput    float64        // current TC input (ms), 0 = unknown
+	liveStep     *liveStepEvent // pending step event waiting for settle
+	liveBaseline []liveSample   // snapshot of baseline before first step change
+	liveResult   *FOPDTResult   // latest live-computed FOPDT result
 }
 
 // NewStepTestRunner creates a new step test runner.
@@ -266,16 +267,38 @@ func (r *StepTestRunner) UpdateTCInput(delayStr string) {
 
 	// Detect a meaningful input change (> 1 ms difference).
 	if prev > 0 && math.Abs(ms-prev) > 1.0 {
-		mag := ms - prev
+		if r.liveStep == nil {
+			// First step: snapshot current window as baseline (filter out RTT=0).
+			r.liveBaseline = nil
+			for _, s := range r.liveWindow {
+				if s.rttMs > 0 {
+					r.liveBaseline = append(r.liveBaseline, s)
+				}
+			}
+			log.Printf("[FOPDT-LIVE] node=%d baseline snapshot: %d samples (prev_input=%.1fms)",
+				r.nodeID, len(r.liveBaseline), prev)
+		} else {
+			// Rapid successive step: keep the original baseline, update step params.
+			log.Printf("[FOPDT-LIVE] node=%d rapid step update: %.1fms → %.1fms (keeping original baseline)",
+				r.nodeID, prev, ms)
+		}
+
+		// Record the step event. For rapid successive steps, we track
+		// the NET change: original baseline input → latest input.
+		origInput := prev
+		if r.liveStep != nil {
+			origInput = r.liveStep.prevInput // keep original pre-change input
+		}
+		mag := ms - origInput
 		r.liveStep = &liveStepEvent{
 			stepTime:  time.Now(),
-			prevInput: prev,
+			prevInput: origInput,
 			newInput:  ms,
 			magnitude: mag,
 		}
 		fopdtStepMagnitudeMs.WithLabelValues(r.nodeLabel).Set(mag)
-		log.Printf("[FOPDT-LIVE] node=%d step detected: %.1fms → %.1fms (Δ=%.1fms)",
-			r.nodeID, prev, ms, mag)
+		log.Printf("[FOPDT-LIVE] node=%d step detected: %.1fms → %.1fms (net Δ=%.1fms)",
+			r.nodeID, origInput, ms, mag)
 	}
 }
 
@@ -306,12 +329,20 @@ func (r *StepTestRunner) StartRTTSampler(interval time.Duration, stopCh <-chan s
 				now := time.Now()
 				rtt := r.node.GetAverageRTT()
 				rttMs := float64(rtt.Nanoseconds()) / 1e6
-				fopdtRTTSampleMs.WithLabelValues(r.nodeLabel).Set(rttMs)
+
+				// Only update RTT gauge and window with non-zero values.
+				// RTT=0 means this node is not the leader (no heartbeats sent).
+				if rttMs > 0 {
+					fopdtRTTSampleMs.WithLabelValues(r.nodeLabel).Set(rttMs)
+				}
 
 				// ── Sliding window bookkeeping ──────────────────────
 				r.liveMu.Lock()
 
-				r.liveWindow = append(r.liveWindow, liveSample{t: now, rttMs: rttMs})
+				// Only add non-zero RTT to the window.
+				if rttMs > 0 {
+					r.liveWindow = append(r.liveWindow, liveSample{t: now, rttMs: rttMs})
+				}
 
 				// Trim samples older than windowDuration.
 				cutoff := now.Add(-windowDuration)
@@ -326,12 +357,13 @@ func (r *StepTestRunner) StartRTTSampler(interval time.Duration, stopCh <-chan s
 				// ── Live FOPDT computation ──────────────────────────
 				step := r.liveStep
 				if step != nil && now.Sub(step.stepTime) >= settleTime {
-					// Collect baseline (before step) and settled (after half settle time).
-					var baseline, postStep []liveSample
+					// Use snapshot baseline (taken before any step change).
+					baseline := r.liveBaseline
+
+					// Post-step samples: after the last step time, excluding RTT=0.
+					var postStep []liveSample
 					for _, s := range r.liveWindow {
-						if s.t.Before(step.stepTime) {
-							baseline = append(baseline, s)
-						} else {
+						if !s.t.Before(step.stepTime) && s.rttMs > 0 {
 							postStep = append(postStep, s)
 						}
 					}
@@ -356,7 +388,9 @@ func (r *StepTestRunner) StartRTTSampler(interval time.Duration, stopCh <-chan s
 							r.nodeID, len(baseline), len(postStep))
 					}
 
-					r.liveStep = nil // consumed
+					// Consumed — clear step and baseline.
+					r.liveStep = nil
+					r.liveBaseline = nil
 				}
 
 				r.liveMu.Unlock()
@@ -401,35 +435,80 @@ func (r *StepTestRunner) computeLiveFOPDT(step *liveStepEvent, baseline, postSte
 	absDelta := math.Abs(deltaRTT)
 	stepUp := deltaRTT >= 0 // true = RTT increased, false = RTT decreased
 
-	// θ (dead time): first sample where RTT moves 10 % toward final value.
-	var deadTimeMs float64
-	for _, s := range postStep {
-		if stepUp && s.rttMs >= rttInitial+0.10*absDelta {
-			deadTimeMs = float64(s.t.Sub(step.stepTime).Nanoseconds()) / 1e6
-			break
+	// Helper: find the time (ms since step) when RTT crosses a given
+	// fraction of the total change.  Uses linear interpolation between
+	// consecutive samples for better accuracy.
+	findCrossingMs := func(fraction float64) float64 {
+		var target float64
+		if stepUp {
+			target = rttInitial + fraction*absDelta
+		} else {
+			target = rttInitial - fraction*absDelta
 		}
-		if !stepUp && s.rttMs <= rttInitial-0.10*absDelta {
-			deadTimeMs = float64(s.t.Sub(step.stepTime).Nanoseconds()) / 1e6
-			break
+
+		for i := 1; i < len(postStep); i++ {
+			prev := postStep[i-1]
+			cur := postStep[i]
+
+			var crossed bool
+			if stepUp {
+				crossed = prev.rttMs < target && cur.rttMs >= target
+			} else {
+				crossed = prev.rttMs > target && cur.rttMs <= target
+			}
+
+			if crossed {
+				// Linear interpolation between prev and cur.
+				dRTT := cur.rttMs - prev.rttMs
+				if math.Abs(dRTT) < 1e-9 {
+					return float64(cur.t.Sub(step.stepTime).Nanoseconds()) / 1e6
+				}
+				frac := (target - prev.rttMs) / dRTT
+				prevMs := float64(prev.t.Sub(step.stepTime).Nanoseconds()) / 1e6
+				curMs := float64(cur.t.Sub(step.stepTime).Nanoseconds()) / 1e6
+				return prevMs + frac*(curMs-prevMs)
+			}
 		}
+
+		// Fallback: check if the first sample already crosses.
+		if len(postStep) > 0 {
+			first := postStep[0]
+			if (stepUp && first.rttMs >= target) || (!stepUp && first.rttMs <= target) {
+				return float64(first.t.Sub(step.stepTime).Nanoseconds()) / 1e6
+			}
+		}
+
+		// Never crossed — estimate from last sample using proportional approach.
+		if len(postStep) > 0 && absDelta > 1e-9 {
+			last := postStep[len(postStep)-1]
+			var achieved float64
+			if stepUp {
+				achieved = (last.rttMs - rttInitial) / absDelta
+			} else {
+				achieved = (rttInitial - last.rttMs) / absDelta
+			}
+			if achieved > 0 {
+				totalMs := float64(last.t.Sub(step.stepTime).Nanoseconds()) / 1e6
+				// Extrapolate assuming first-order response.
+				return totalMs * fraction / achieved
+			}
+		}
+
+		return 0
 	}
 
+	// θ (dead time): time to reach 10 % of final change.
+	deadTimeMs := findCrossingMs(0.10)
+
 	// τ (time constant): time to reach 63.2 % of final change, minus θ.
-	var tauPlusTheta float64
-	for _, s := range postStep {
-		if stepUp && s.rttMs >= rttInitial+0.632*absDelta {
-			tauPlusTheta = float64(s.t.Sub(step.stepTime).Nanoseconds()) / 1e6
-			break
-		}
-		if !stepUp && s.rttMs <= rttInitial-0.632*absDelta {
-			tauPlusTheta = float64(s.t.Sub(step.stepTime).Nanoseconds()) / 1e6
-			break
-		}
-	}
+	tauPlusTheta := findCrossingMs(0.632)
 	timeConstantMs := tauPlusTheta - deadTimeMs
 	if timeConstantMs < 0 {
 		timeConstantMs = 0
 	}
+
+	log.Printf("[FOPDT-LIVE] node=%d details: absDelta=%.2fms stepUp=%v θ=%.1fms (63.2%%@%.1fms) τ=%.1fms",
+		r.nodeID, absDelta, stepUp, deadTimeMs, tauPlusTheta, timeConstantMs)
 
 	return &FOPDTResult{
 		K:               K,
@@ -687,26 +766,70 @@ func (r *StepTestRunner) computeFOPDT(stepTime time.Time, magnitude float64) *FO
 		K = deltaRTT / magnitude
 	}
 
-	// θ (dead time): first sample where RTT exceeds baseline + 10 % of ΔRTT.
+	// θ and τ: use directional crossing with linear interpolation.
 	absDelta := math.Abs(deltaRTT)
-	threshold10 := rttInitial + 0.10*absDelta
-	var deadTimeMs float64
-	for _, s := range step {
-		if s.RTTMs > threshold10 {
-			deadTimeMs = float64(s.Timestamp.Sub(stepTime).Nanoseconds()) / 1e6
-			break
+	stepUp := deltaRTT >= 0
+
+	// Helper: find time (ms since stepTime) when RTT crosses a given
+	// fraction of the total change, with interpolation.
+	findCrossing := func(fraction float64) float64 {
+		var target float64
+		if stepUp {
+			target = rttInitial + fraction*absDelta
+		} else {
+			target = rttInitial - fraction*absDelta
 		}
+
+		for i := 1; i < len(step); i++ {
+			prev := step[i-1]
+			cur := step[i]
+
+			var crossed bool
+			if stepUp {
+				crossed = prev.RTTMs < target && cur.RTTMs >= target
+			} else {
+				crossed = prev.RTTMs > target && cur.RTTMs <= target
+			}
+
+			if crossed {
+				dRTT := cur.RTTMs - prev.RTTMs
+				if math.Abs(dRTT) < 1e-9 {
+					return float64(cur.Timestamp.Sub(stepTime).Nanoseconds()) / 1e6
+				}
+				frac := (target - prev.RTTMs) / dRTT
+				prevMs := float64(prev.Timestamp.Sub(stepTime).Nanoseconds()) / 1e6
+				curMs := float64(cur.Timestamp.Sub(stepTime).Nanoseconds()) / 1e6
+				return prevMs + frac*(curMs-prevMs)
+			}
+		}
+
+		// Fallback: first sample already crosses.
+		if len(step) > 0 {
+			first := step[0]
+			if (stepUp && first.RTTMs >= target) || (!stepUp && first.RTTMs <= target) {
+				return float64(first.Timestamp.Sub(stepTime).Nanoseconds()) / 1e6
+			}
+		}
+
+		// Never crossed — extrapolate.
+		if len(step) > 0 && absDelta > 1e-9 {
+			last := step[len(step)-1]
+			var achieved float64
+			if stepUp {
+				achieved = (last.RTTMs - rttInitial) / absDelta
+			} else {
+				achieved = (rttInitial - last.RTTMs) / absDelta
+			}
+			if achieved > 0 {
+				totalMs := float64(last.Timestamp.Sub(stepTime).Nanoseconds()) / 1e6
+				return totalMs * fraction / achieved
+			}
+		}
+		return 0
 	}
 
-	// τ (time constant): time to reach 63.2 % of final change, minus θ.
-	threshold63 := rttInitial + 0.632*absDelta
-	var tauPlusTheta float64
-	for _, s := range step {
-		if s.RTTMs > threshold63 {
-			tauPlusTheta = float64(s.Timestamp.Sub(stepTime).Nanoseconds()) / 1e6
-			break
-		}
-	}
+	deadTimeMs := findCrossing(0.10)
+	tauPlusTheta := findCrossing(0.632)
 	timeConstantMs := tauPlusTheta - deadTimeMs
 	if timeConstantMs < 0 {
 		timeConstantMs = 0
