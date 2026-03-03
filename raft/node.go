@@ -757,3 +757,9 @@ func (n *Node) GetAverageRTT() time.Duration {
 	defer n.mu.Unlock()
 	return n.aggregateRTT()
 }
+
+// StopChan returns a channel that is closed when the node stops.
+// Useful for background goroutines that should terminate with the node.
+func (n *Node) StopChan() <-chan struct{} {
+	return n.stopCh
+}

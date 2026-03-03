@@ -280,6 +280,15 @@ func main() {
 	// ── FOPDT Step Response Test runner ──────────────────────────────
 	stepRunner := NewStepTestRunner(id, node, tcMgr)
 
+	// Start background RTT sampler so raft_fopdt_rtt_sample_milliseconds
+	// is always up-to-date (every 200ms), not only during step tests.
+	stepRunner.StartRTTSampler(200*time.Millisecond, node.StopChan())
+
+	// Also initialize the TC input metric with the current TC delay.
+	if curDelay := tcMgr.Current().Delay; curDelay != "" {
+		stepRunner.UpdateTCInput(curDelay)
+	}
+
 	mux.HandleFunc("/tc", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -310,10 +319,14 @@ func main() {
 				_ = json.NewEncoder(w).Encode(resp)
 				return
 			}
+			// Update FOPDT input metric so Prometheus tracks TC changes in real-time.
+			applied := tcMgr.Current()
+			stepRunner.UpdateTCInput(applied.Delay)
+
 			resp := map[string]interface{}{
 				"success": true,
 				"node_id": id,
-				"applied": tcMgr.Current(),
+				"applied": applied,
 			}
 			_ = json.NewEncoder(w).Encode(resp)
 

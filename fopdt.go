@@ -219,6 +219,43 @@ func delayToMs(s string) (float64, error) {
 }
 
 // ============================================================================
+// Real-time tracking (independent of step test)
+// ============================================================================
+
+// UpdateTCInput updates the raft_fopdt_step_input_milliseconds gauge
+// whenever TC delay is applied via /tc endpoint.  This allows the
+// metric to reflect the current TC delay even without a formal step test.
+func (r *StepTestRunner) UpdateTCInput(delayStr string) {
+	ms, err := delayToMs(delayStr)
+	if err != nil {
+		log.Printf("[FOPDT] node=%d cannot parse TC delay %q: %v", r.nodeID, delayStr, err)
+		return
+	}
+	fopdtStepInputMs.WithLabelValues(r.nodeLabel).Set(ms)
+}
+
+// StartRTTSampler launches a background goroutine that continuously
+// pushes the node's average RTT to raft_fopdt_rtt_sample_milliseconds.
+// This runs forever (until stopCh is closed) so the metric is always
+// up-to-date, not only during a step test.
+func (r *StepTestRunner) StartRTTSampler(interval time.Duration, stopCh <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				rtt := r.node.GetAverageRTT()
+				rttMs := float64(rtt.Nanoseconds()) / 1e6
+				fopdtRTTSampleMs.WithLabelValues(r.nodeLabel).Set(rttMs)
+			}
+		}
+	}()
+}
+
+// ============================================================================
 // Run / Abort
 // ============================================================================
 
