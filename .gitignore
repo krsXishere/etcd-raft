@@ -36,3 +36,5 @@ logs/
 
 # Temporary files
 *.tmp
+# Environment variables
+.env
