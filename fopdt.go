@@ -133,6 +133,20 @@ var (
 // Data structures
 // ============================================================================
 
+// liveSample is an RTT observation used by the live FOPDT estimator.
+type liveSample struct {
+	t     time.Time
+	rttMs float64
+}
+
+// liveStepEvent records a detected TC input change for live FOPDT.
+type liveStepEvent struct {
+	stepTime  time.Time
+	prevInput float64 // TC delay before change (ms)
+	newInput  float64 // TC delay after change (ms)
+	magnitude float64 // newInput - prevInput (ms)
+}
+
 // StepTestConfig holds the parameters for a FOPDT step response test.
 type StepTestConfig struct {
 	PreDelay         string `json:"pre_delay"`          // TC delay before step, e.g. "2ms"
@@ -181,6 +195,13 @@ type StepTestRunner struct {
 	startTime time.Time
 	errMsg    string
 	stopCh    chan struct{} // signal to abort a running test
+
+	// ── Live FOPDT estimation (from /tc changes) ────────────────
+	liveMu     sync.Mutex
+	liveWindow []liveSample   // sliding window of recent RTT samples
+	liveInput  float64        // current TC input (ms), 0 = unknown
+	liveStep   *liveStepEvent // pending step event waiting for settle
+	liveResult *FOPDTResult   // latest live-computed FOPDT result
 }
 
 // NewStepTestRunner creates a new step test runner.
@@ -225,6 +246,10 @@ func delayToMs(s string) (float64, error) {
 // UpdateTCInput updates the raft_fopdt_step_input_milliseconds gauge
 // whenever TC delay is applied via /tc endpoint.  This allows the
 // metric to reflect the current TC delay even without a formal step test.
+//
+// It also detects step changes: when the new delay differs from the
+// previous one by more than 1 ms, it records a liveStepEvent so the
+// background RTT sampler can compute live FOPDT parameters.
 func (r *StepTestRunner) UpdateTCInput(delayStr string) {
 	ms, err := delayToMs(delayStr)
 	if err != nil {
@@ -232,27 +257,188 @@ func (r *StepTestRunner) UpdateTCInput(delayStr string) {
 		return
 	}
 	fopdtStepInputMs.WithLabelValues(r.nodeLabel).Set(ms)
+
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+
+	prev := r.liveInput
+	r.liveInput = ms
+
+	// Detect a meaningful input change (> 1 ms difference).
+	if prev > 0 && math.Abs(ms-prev) > 1.0 {
+		mag := ms - prev
+		r.liveStep = &liveStepEvent{
+			stepTime:  time.Now(),
+			prevInput: prev,
+			newInput:  ms,
+			magnitude: mag,
+		}
+		fopdtStepMagnitudeMs.WithLabelValues(r.nodeLabel).Set(mag)
+		log.Printf("[FOPDT-LIVE] node=%d step detected: %.1fms → %.1fms (Δ=%.1fms)",
+			r.nodeID, prev, ms, mag)
+	}
 }
 
 // StartRTTSampler launches a background goroutine that continuously
 // pushes the node's average RTT to raft_fopdt_rtt_sample_milliseconds.
 // This runs forever (until stopCh is closed) so the metric is always
 // up-to-date, not only during a step test.
+//
+// It also performs **live FOPDT estimation**: when a TC input change is
+// detected (via UpdateTCInput), the goroutine waits for the system to
+// settle and then computes K, θ, τ automatically — no /step-test needed.
 func (r *StepTestRunner) StartRTTSampler(interval time.Duration, stopCh <-chan struct{}) {
+	const (
+		windowDuration = 120 * time.Second // keep 2 min of RTT history
+		settleTime     = 15 * time.Second  // wait 15 s after step to compute
+		minSamples     = 5                 // minimum samples for each segment
+	)
+
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+
 		for {
 			select {
 			case <-stopCh:
 				return
 			case <-ticker.C:
+				now := time.Now()
 				rtt := r.node.GetAverageRTT()
 				rttMs := float64(rtt.Nanoseconds()) / 1e6
 				fopdtRTTSampleMs.WithLabelValues(r.nodeLabel).Set(rttMs)
+
+				// ── Sliding window bookkeeping ──────────────────────
+				r.liveMu.Lock()
+
+				r.liveWindow = append(r.liveWindow, liveSample{t: now, rttMs: rttMs})
+
+				// Trim samples older than windowDuration.
+				cutoff := now.Add(-windowDuration)
+				trimIdx := 0
+				for trimIdx < len(r.liveWindow) && r.liveWindow[trimIdx].t.Before(cutoff) {
+					trimIdx++
+				}
+				if trimIdx > 0 {
+					r.liveWindow = append([]liveSample(nil), r.liveWindow[trimIdx:]...)
+				}
+
+				// ── Live FOPDT computation ──────────────────────────
+				step := r.liveStep
+				if step != nil && now.Sub(step.stepTime) >= settleTime {
+					// Collect baseline (before step) and settled (after half settle time).
+					var baseline, postStep []liveSample
+					for _, s := range r.liveWindow {
+						if s.t.Before(step.stepTime) {
+							baseline = append(baseline, s)
+						} else {
+							postStep = append(postStep, s)
+						}
+					}
+
+					if len(baseline) >= minSamples && len(postStep) >= minSamples {
+						result := r.computeLiveFOPDT(step, baseline, postStep)
+						r.liveResult = result
+
+						// Push to Prometheus.
+						fopdtGainK.WithLabelValues(r.nodeLabel).Set(result.K)
+						fopdtDeadTimeMs.WithLabelValues(r.nodeLabel).Set(result.DeadTimeMs)
+						fopdtTimeConstantMs.WithLabelValues(r.nodeLabel).Set(result.TimeConstantMs)
+						fopdtRTTInitialMs.WithLabelValues(r.nodeLabel).Set(result.RTTInitialMs)
+						fopdtRTTFinalMs.WithLabelValues(r.nodeLabel).Set(result.RTTFinalMs)
+						fopdtStepMagnitudeMs.WithLabelValues(r.nodeLabel).Set(result.StepMagnitudeMs)
+
+						log.Printf("[FOPDT-LIVE] node=%d COMPUTED  K=%.4f  θ=%.1fms  τ=%.1fms  (RTT %.1f→%.1fms, step=%.1fms)",
+							r.nodeID, result.K, result.DeadTimeMs, result.TimeConstantMs,
+							result.RTTInitialMs, result.RTTFinalMs, result.StepMagnitudeMs)
+					} else {
+						log.Printf("[FOPDT-LIVE] node=%d skipped: not enough samples (baseline=%d, post=%d)",
+							r.nodeID, len(baseline), len(postStep))
+					}
+
+					r.liveStep = nil // consumed
+				}
+
+				r.liveMu.Unlock()
 			}
 		}
 	}()
+}
+
+// computeLiveFOPDT derives K, θ, τ from a live step event.
+func (r *StepTestRunner) computeLiveFOPDT(step *liveStepEvent, baseline, postStep []liveSample) *FOPDTResult {
+	// Baseline average RTT.
+	rttInitial := 0.0
+	for _, s := range baseline {
+		rttInitial += s.rttMs
+	}
+	rttInitial /= float64(len(baseline))
+
+	// Settled average RTT (last 20 % of post-step samples).
+	tailCount := len(postStep) / 5
+	if tailCount < 3 {
+		tailCount = 3
+	}
+	if tailCount > len(postStep) {
+		tailCount = len(postStep)
+	}
+	rttFinal := 0.0
+	for _, s := range postStep[len(postStep)-tailCount:] {
+		rttFinal += s.rttMs
+	}
+	rttFinal /= float64(tailCount)
+
+	deltaRTT := rttFinal - rttInitial
+	magnitude := step.magnitude
+
+	// K = ΔRTT / step_magnitude.
+	var K float64
+	if magnitude != 0 {
+		K = deltaRTT / magnitude
+	}
+
+	// Determine step direction for threshold comparisons.
+	absDelta := math.Abs(deltaRTT)
+	stepUp := deltaRTT >= 0 // true = RTT increased, false = RTT decreased
+
+	// θ (dead time): first sample where RTT moves 10 % toward final value.
+	var deadTimeMs float64
+	for _, s := range postStep {
+		if stepUp && s.rttMs >= rttInitial+0.10*absDelta {
+			deadTimeMs = float64(s.t.Sub(step.stepTime).Nanoseconds()) / 1e6
+			break
+		}
+		if !stepUp && s.rttMs <= rttInitial-0.10*absDelta {
+			deadTimeMs = float64(s.t.Sub(step.stepTime).Nanoseconds()) / 1e6
+			break
+		}
+	}
+
+	// τ (time constant): time to reach 63.2 % of final change, minus θ.
+	var tauPlusTheta float64
+	for _, s := range postStep {
+		if stepUp && s.rttMs >= rttInitial+0.632*absDelta {
+			tauPlusTheta = float64(s.t.Sub(step.stepTime).Nanoseconds()) / 1e6
+			break
+		}
+		if !stepUp && s.rttMs <= rttInitial-0.632*absDelta {
+			tauPlusTheta = float64(s.t.Sub(step.stepTime).Nanoseconds()) / 1e6
+			break
+		}
+	}
+	timeConstantMs := tauPlusTheta - deadTimeMs
+	if timeConstantMs < 0 {
+		timeConstantMs = 0
+	}
+
+	return &FOPDTResult{
+		K:               K,
+		DeadTimeMs:      deadTimeMs,
+		TimeConstantMs:  timeConstantMs,
+		RTTInitialMs:    rttInitial,
+		RTTFinalMs:      rttFinal,
+		StepMagnitudeMs: magnitude,
+	}
 }
 
 // ============================================================================
@@ -573,6 +759,21 @@ func (r *StepTestRunner) Status() map[string]interface{} {
 	if r.errMsg != "" {
 		status["error"] = r.errMsg
 	}
+
+	// Include live FOPDT result if available.
+	r.liveMu.Lock()
+	if r.liveResult != nil {
+		status["live_fopdt"] = r.liveResult
+	}
+	if r.liveStep != nil {
+		status["live_step_pending"] = map[string]interface{}{
+			"step_time":  r.liveStep.stepTime,
+			"prev_input": r.liveStep.prevInput,
+			"new_input":  r.liveStep.newInput,
+			"magnitude":  r.liveStep.magnitude,
+		}
+	}
+	r.liveMu.Unlock()
 
 	// Warn if this node is not the leader (RTT not measured on followers).
 	if r.node.RoleString() != "leader" {
