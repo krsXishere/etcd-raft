@@ -265,8 +265,16 @@ func (r *StepTestRunner) UpdateTCInput(delayStr string) {
 	prev := r.liveInput
 	r.liveInput = ms
 
+	if prev == 0 {
+		// First TC input ever: record it as the baseline input.
+		// Don't trigger a step yet — we need baseline RTT samples first.
+		// The NEXT different /tc call will be the actual step.
+		log.Printf("[FOPDT-LIVE] node=%d initial TC input: %.1fms (baseline)", r.nodeID, ms)
+		return
+	}
+
 	// Detect a meaningful input change (> 1 ms difference).
-	if prev > 0 && math.Abs(ms-prev) > 1.0 {
+	if math.Abs(ms-prev) > 1.0 {
 		if r.liveStep == nil {
 			// First step: snapshot current window as baseline (filter out RTT=0).
 			r.liveBaseline = nil
@@ -342,6 +350,16 @@ func (r *StepTestRunner) StartRTTSampler(interval time.Duration, stopCh <-chan s
 				// Only add non-zero RTT to the window.
 				if rttMs > 0 {
 					r.liveWindow = append(r.liveWindow, liveSample{t: now, rttMs: rttMs})
+				}
+
+				// Periodic debug: log window state every ~30 seconds (150 ticks @ 200ms).
+				windowSize := len(r.liveWindow)
+				hasStep := r.liveStep != nil
+				baselineSize := len(r.liveBaseline)
+				inputMs := r.liveInput
+				if windowSize%150 == 1 {
+					log.Printf("[FOPDT-LIVE] node=%d window=%d baseline=%d input=%.1fms step_pending=%v rtt=%.1fms role=%s",
+						r.nodeID, windowSize, baselineSize, inputMs, hasStep, rttMs, r.node.RoleString())
 				}
 
 				// Trim samples older than windowDuration.
