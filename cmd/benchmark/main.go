@@ -129,6 +129,39 @@ func getStatus(target string) (*statusResponse, error) {
 	return &sr, nil
 }
 
+// getLeaderElectionCount queries Prometheus /metrics for raft_election_leader_elections_total
+func getLeaderElectionCount(target string) int64 {
+	resp, err := httpClient.Get(fmt.Sprintf("http://%s/metrics", target))
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+
+	// Parse Prometheus text format for raft_election_leader_elections_total
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "raft_election_leader_elections_total{") {
+			// Format: raft_election_leader_elections_total{node_id="1"} 3
+			parts := strings.Split(line, " ")
+			if len(parts) >= 2 {
+				var count int64
+				fmt.Sscanf(parts[len(parts)-1], "%d", &count)
+				return count
+			}
+		}
+	}
+	return 0
+}
+
+// getTotalLeaderElections sums leader_elections_total across all nodes
+func getTotalLeaderElections(targets []string) int64 {
+	var total int64
+	for _, t := range targets {
+		total += getLeaderElectionCount(t)
+	}
+	return total
+}
+
 // discoverLeader polls all targets until one reports role == "leader".
 func discoverLeader(targets []string) string {
 	for _, t := range targets {
@@ -260,6 +293,10 @@ func main() {
 		log.Printf("[bench] leader found: %s", leader)
 	}
 
+	// Snapshot leader election count BEFORE benchmark
+	electionsBefore := getTotalLeaderElections(cfg.Targets)
+	log.Printf("[bench] leader elections before: %d", electionsBefore)
+
 	// Start election observer
 	eo := newElectionObserver(cfg.Targets)
 	eo.start()
@@ -273,8 +310,12 @@ func main() {
 	// Stop election observer
 	electionDurations := eo.stop()
 
+	// Snapshot leader election count AFTER benchmark
+	electionsAfter := getTotalLeaderElections(cfg.Targets)
+	log.Printf("[bench] leader elections after: %d (delta=%d)", electionsAfter, electionsAfter-electionsBefore)
+
 	// Report
-	report(st, totalDur, electionDurations)
+	report(st, totalDur, electionDurations, electionsBefore, electionsAfter)
 }
 
 func parseConfig() config {
@@ -396,7 +437,7 @@ func pickTarget(targets []string) string {
 // Report
 // ─────────────────────────────────────────────────────────────────────
 
-func report(st *stats, totalDur time.Duration, electionDurations []time.Duration) {
+func report(st *stats, totalDur time.Duration, electionDurations []time.Duration, electionsBefore, electionsAfter int64) {
 	st.mu.Lock()
 	latencies := make([]time.Duration, len(st.latencies))
 	copy(latencies, st.latencies)
@@ -437,28 +478,33 @@ func report(st *stats, totalDur time.Duration, electionDurations []time.Duration
 	fmt.Println("╠══════════════════════════════════════════════════════════╣")
 	fmt.Println("║  LEADER ELECTION                                       ║")
 	fmt.Println("╠══════════════════════════════════════════════════════════╣")
+	elecDelta := electionsAfter - electionsBefore
+	fmt.Printf("║  Elections (Prom) : %-36d ║\n", elecDelta)
 	if len(electionDurations) > 0 {
 		sort.Slice(electionDurations, func(i, j int) bool {
 			return electionDurations[i] < electionDurations[j]
 		})
-		fmt.Printf("║  Elections seen   : %-36d ║\n", len(electionDurations))
-		fmt.Printf("║  Min              : %-36s ║\n", electionDurations[0])
-		fmt.Printf("║  Max              : %-36s ║\n", electionDurations[len(electionDurations)-1])
-		fmt.Printf("║  Mean             : %-36s ║\n", mean(electionDurations))
+		fmt.Printf("║  Observed (poll)  : %-36d ║\n", len(electionDurations))
+		fmt.Printf("║  Min duration     : %-36s ║\n", electionDurations[0])
+		fmt.Printf("║  Max duration     : %-36s ║\n", electionDurations[len(electionDurations)-1])
+		fmt.Printf("║  Mean duration    : %-36s ║\n", mean(electionDurations))
 	} else {
-		fmt.Println("║  No leader elections observed during benchmark          ║")
+		fmt.Println("║  No election durations measured (no leader change)      ║")
 	}
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
 	// Also write machine-readable JSON
+	timestamp := time.Now().Format("20060102_150405")
 	jsonReport := map[string]interface{}{
-		"duration_s": totalDur.Seconds(),
-		"total_ops":  total,
-		"successes":  successes,
-		"failures":   failures,
-		"throughput": float64(successes) / math.Max(totalDur.Seconds(), 0.001),
-		"elections":  len(electionDurations),
+		"timestamp":          timestamp,
+		"duration_s":         totalDur.Seconds(),
+		"total_ops":          total,
+		"successes":          successes,
+		"failures":           failures,
+		"throughput":         float64(successes) / math.Max(totalDur.Seconds(), 0.001),
+		"elections_total":    elecDelta,
+		"elections_observed": len(electionDurations),
 	}
 	if len(latencies) > 0 {
 		jsonReport["latency_p50_ms"] = float64(percentile(latencies, 50).Microseconds()) / 1000.0
@@ -466,9 +512,15 @@ func report(st *stats, totalDur time.Duration, electionDurations []time.Duration
 		jsonReport["latency_p99_ms"] = float64(percentile(latencies, 99).Microseconds()) / 1000.0
 		jsonReport["latency_mean_ms"] = float64(mean(latencies).Microseconds()) / 1000.0
 	}
+	if len(electionDurations) > 0 {
+		jsonReport["election_min_ms"] = float64(electionDurations[0].Microseconds()) / 1000.0
+		jsonReport["election_max_ms"] = float64(electionDurations[len(electionDurations)-1].Microseconds()) / 1000.0
+		jsonReport["election_mean_ms"] = float64(mean(electionDurations).Microseconds()) / 1000.0
+	}
 	data, _ := json.MarshalIndent(jsonReport, "", "  ")
-	_ = os.WriteFile("/app/results/benchmark_results.json", data, 0644)
-	fmt.Println("JSON results written to /app/results/benchmark_results.json")
+	filename := fmt.Sprintf("/app/results/benchmark_%s.json", timestamp)
+	_ = os.WriteFile(filename, data, 0644)
+	fmt.Printf("JSON results written to %s\n", filename)
 }
 
 func percentile(sorted []time.Duration, p float64) time.Duration {
