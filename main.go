@@ -357,6 +357,10 @@ func main() {
 	mux.HandleFunc("/step-test", stepRunner.HandleStepTest)
 	mux.HandleFunc("/step-test/samples", stepRunner.HandleStepTestSamples)
 
+	// ── Network Partition simulation endpoint ────────────────────────
+	partMgr := NewPartitionManager(id, peerAddrs)
+	mux.HandleFunc("/partition", partMgr.HandlePartition)
+
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -373,6 +377,7 @@ func main() {
 			"role":      node.RoleString(),
 			"leader_id": node.LeaderID(),
 			"term":      node.CurrentTerm(),
+			"partition": partMgr.Status(),
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(status)
