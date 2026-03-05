@@ -35,8 +35,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// LeaderChecker is implemented by raft.Node — used to measure recovery time.
+type LeaderChecker interface {
+	LeaderID() uint64
+}
+
 // ============================================================================
-// Cluster 8 — Network Partition Metrics (3 metrik)
+// Cluster 8 — Network Partition Metrics (5 metrik)
 //
 // Sumber data  : PartitionManager
 // Fungsi       : Melacak simulasi network partition untuk Scenario 3
@@ -66,6 +71,22 @@ var (
 		Name:      "events_total",
 		Help:      "Total number of partition events (isolate + heal)",
 	}, []string{"node_id", "action"}) // action = "isolate" | "heal"
+
+	// Gauge: recovery time terakhir (ms) — waktu dari heal sampai leader terdeteksi
+	partitionRecoveryMs = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "raft",
+		Subsystem: "partition",
+		Name:      "recovery_milliseconds",
+		Help:      "Time from partition heal to leader re-election (ms)",
+	}, []string{"node_id"})
+
+	// Gauge: partition duration terakhir (ms)
+	partitionDurationMs = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "raft",
+		Subsystem: "partition",
+		Name:      "duration_milliseconds",
+		Help:      "Duration of the last partition (ms)",
+	}, []string{"node_id"})
 )
 
 // PartitionManager handles iptables-based network partition simulation.
@@ -74,14 +95,24 @@ type PartitionManager struct {
 	nodeID    uint64
 	nodeLabel string
 	peerAddrs map[uint64]string // peerID → "host:port"
+	checker   LeaderChecker     // for measuring recovery time
 
 	isolated    map[uint64]bool // peer IDs currently isolated
 	partitioned bool
 	startTime   time.Time // when partition was created
+
+	// Recovery tracking.
+	recovering      bool          // true while measuring recovery
+	healTime        time.Time     // when Heal() was called
+	lastRecoveryMs  float64       // last measured recovery time (ms)
+	lastPartitionMs float64       // last partition duration (ms)
+	recoveryHistory []float64     // all recovery times (ms)
+	stopRecoveryCh  chan struct{} // cancel in-flight recovery measurement
 }
 
 // NewPartitionManager creates a new partition manager.
-func NewPartitionManager(nodeID uint64, peerAddrs map[uint64]string) *PartitionManager {
+// checker may be nil (recovery time won't be measured).
+func NewPartitionManager(nodeID uint64, peerAddrs map[uint64]string, checker LeaderChecker) *PartitionManager {
 	label := fmt.Sprintf("%d", nodeID)
 
 	// Pre-initialize gauges.
@@ -89,11 +120,14 @@ func NewPartitionManager(nodeID uint64, peerAddrs map[uint64]string) *PartitionM
 	partitionIsolatedPeers.WithLabelValues(label).Set(0)
 	partitionEventsTotal.WithLabelValues(label, "isolate")
 	partitionEventsTotal.WithLabelValues(label, "heal")
+	partitionRecoveryMs.WithLabelValues(label).Set(0)
+	partitionDurationMs.WithLabelValues(label).Set(0)
 
 	return &PartitionManager{
 		nodeID:    nodeID,
 		nodeLabel: label,
 		peerAddrs: peerAddrs,
+		checker:   checker,
 		isolated:  make(map[uint64]bool),
 	}
 }
@@ -224,10 +258,79 @@ func (pm *PartitionManager) Heal() error {
 	}
 
 	log.Printf("[PARTITION] node=%d fully healed (partition lasted %s)", pm.nodeID, duration)
+
+	// Record partition duration in Prometheus.
+	partitionDurationMs.WithLabelValues(pm.nodeLabel).Set(float64(duration.Milliseconds()))
+	pm.lastPartitionMs = float64(duration.Milliseconds())
+
+	// Start recovery time measurement in background.
+	pm.healTime = time.Now()
+	pm.startRecoveryMeasurement()
+
 	return nil
 }
 
-// Status returns the current partition state.
+// startRecoveryMeasurement polls LeaderID() until a leader is detected.
+// Runs in background goroutine; records recovery time in Prometheus.
+func (pm *PartitionManager) startRecoveryMeasurement() {
+	if pm.checker == nil {
+		log.Printf("[PARTITION] node=%d no LeaderChecker, skipping recovery measurement", pm.nodeID)
+		return
+	}
+
+	// Cancel any in-flight measurement.
+	if pm.stopRecoveryCh != nil {
+		close(pm.stopRecoveryCh)
+	}
+	pm.stopRecoveryCh = make(chan struct{})
+	pm.recovering = true
+
+	healTime := pm.healTime
+	stopCh := pm.stopRecoveryCh
+
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		timeout := time.After(120 * time.Second) // max 2 min
+
+		log.Printf("[PARTITION] node=%d measuring recovery time...", pm.nodeID)
+
+		for {
+			select {
+			case <-stopCh:
+				log.Printf("[PARTITION] node=%d recovery measurement cancelled", pm.nodeID)
+				return
+			case <-timeout:
+				log.Printf("[PARTITION] node=%d recovery measurement timed out (120s)", pm.nodeID)
+				pm.mu.Lock()
+				pm.recovering = false
+				pm.mu.Unlock()
+				return
+			case <-ticker.C:
+				leader := pm.checker.LeaderID()
+				if leader != 0 {
+					recoveryDur := time.Since(healTime)
+					recoveryMs := float64(recoveryDur.Milliseconds())
+
+					pm.mu.Lock()
+					pm.recovering = false
+					pm.lastRecoveryMs = recoveryMs
+					pm.recoveryHistory = append(pm.recoveryHistory, recoveryMs)
+					pm.mu.Unlock()
+
+					partitionRecoveryMs.WithLabelValues(pm.nodeLabel).Set(recoveryMs)
+
+					log.Printf("[PARTITION] node=%d recovery complete: leader=%d recovery_time=%s",
+						pm.nodeID, leader, recoveryDur)
+					return
+				}
+			}
+		}
+	}()
+}
+
+// Status returns the current partition state including recovery info.
 func (pm *PartitionManager) Status() map[string]interface{} {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -241,10 +344,21 @@ func (pm *PartitionManager) Status() map[string]interface{} {
 		"node_id":     pm.nodeID,
 		"partitioned": pm.partitioned,
 		"isolated":    isolated,
+		"recovering":  pm.recovering,
 	}
 
 	if pm.partitioned {
-		status["duration_s"] = time.Since(pm.startTime).Seconds()
+		status["partition_duration_s"] = time.Since(pm.startTime).Seconds()
+	}
+
+	if pm.lastRecoveryMs > 0 {
+		status["last_recovery_ms"] = pm.lastRecoveryMs
+	}
+	if pm.lastPartitionMs > 0 {
+		status["last_partition_ms"] = pm.lastPartitionMs
+	}
+	if len(pm.recoveryHistory) > 0 {
+		status["recovery_history_ms"] = pm.recoveryHistory
 	}
 
 	return status
@@ -317,11 +431,16 @@ func (pm *PartitionManager) HandlePartition(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"node_id": pm.nodeID,
-			"message": "all partitions healed, full connectivity restored",
-		})
+		pm.mu.Lock()
+		resp := map[string]interface{}{
+			"success":               true,
+			"node_id":               pm.nodeID,
+			"message":               "all partitions healed, full connectivity restored",
+			"partition_duration_ms": pm.lastPartitionMs,
+			"measuring_recovery":    pm.recovering,
+		}
+		pm.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(resp)
 
 	default:
 		http.Error(w, `{"error":"method not allowed, use GET / POST / DELETE"}`, http.StatusMethodNotAllowed)

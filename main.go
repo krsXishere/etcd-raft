@@ -358,7 +358,7 @@ func main() {
 	mux.HandleFunc("/step-test/samples", stepRunner.HandleStepTestSamples)
 
 	// ── Network Partition simulation endpoint ────────────────────────
-	partMgr := NewPartitionManager(id, peerAddrs)
+	partMgr := NewPartitionManager(id, peerAddrs, node)
 	mux.HandleFunc("/partition", partMgr.HandlePartition)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

@@ -162,6 +162,63 @@ func getTotalLeaderElections(targets []string) int64 {
 	return total
 }
 
+// getPartitionRecoveryMs reads raft_partition_recovery_milliseconds for a target.
+func getPartitionRecoveryMs(target string) float64 {
+	resp, err := httpClient.Get(fmt.Sprintf("http://%s/metrics", target))
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "raft_partition_recovery_milliseconds{") {
+			parts := strings.Split(line, " ")
+			if len(parts) >= 2 {
+				var val float64
+				fmt.Sscanf(parts[len(parts)-1], "%f", &val)
+				return val
+			}
+		}
+	}
+	return 0
+}
+
+// getPartitionDurationMs reads raft_partition_duration_milliseconds for a target.
+func getPartitionDurationMs(target string) float64 {
+	resp, err := httpClient.Get(fmt.Sprintf("http://%s/metrics", target))
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "raft_partition_duration_milliseconds{") {
+			parts := strings.Split(line, " ")
+			if len(parts) >= 2 {
+				var val float64
+				fmt.Sscanf(parts[len(parts)-1], "%f", &val)
+				return val
+			}
+		}
+	}
+	return 0
+}
+
+// collectPartitionMetrics gathers partition recovery and duration from all nodes.
+func collectPartitionMetrics(targets []string) (maxRecoveryMs, maxDurationMs float64) {
+	for _, t := range targets {
+		if r := getPartitionRecoveryMs(t); r > maxRecoveryMs {
+			maxRecoveryMs = r
+		}
+		if d := getPartitionDurationMs(t); d > maxDurationMs {
+			maxDurationMs = d
+		}
+	}
+	return
+}
+
 // discoverLeader polls all targets until one reports role == "leader".
 func discoverLeader(targets []string) string {
 	for _, t := range targets {
@@ -314,8 +371,14 @@ func main() {
 	electionsAfter := getTotalLeaderElections(cfg.Targets)
 	log.Printf("[bench] leader elections after: %d (delta=%d)", electionsAfter, electionsAfter-electionsBefore)
 
+	// Collect partition recovery metrics
+	recoveryMs, partDurationMs := collectPartitionMetrics(cfg.Targets)
+	if recoveryMs > 0 {
+		log.Printf("[bench] partition recovery_ms=%.1f partition_duration_ms=%.1f", recoveryMs, partDurationMs)
+	}
+
 	// Report
-	report(st, totalDur, electionDurations, electionsBefore, electionsAfter)
+	report(st, totalDur, electionDurations, electionsBefore, electionsAfter, recoveryMs, partDurationMs)
 }
 
 func parseConfig() config {
@@ -437,7 +500,7 @@ func pickTarget(targets []string) string {
 // Report
 // ─────────────────────────────────────────────────────────────────────
 
-func report(st *stats, totalDur time.Duration, electionDurations []time.Duration, electionsBefore, electionsAfter int64) {
+func report(st *stats, totalDur time.Duration, electionDurations []time.Duration, electionsBefore, electionsAfter int64, recoveryMs, partDurationMs float64) {
 	st.mu.Lock()
 	latencies := make([]time.Duration, len(st.latencies))
 	copy(latencies, st.latencies)
@@ -491,6 +554,13 @@ func report(st *stats, totalDur time.Duration, electionDurations []time.Duration
 	} else {
 		fmt.Println("║  No election durations measured (no leader change)      ║")
 	}
+	if recoveryMs > 0 || partDurationMs > 0 {
+		fmt.Println("╠══════════════════════════════════════════════════════════╣")
+		fmt.Println("║  PARTITION RECOVERY                                     ║")
+		fmt.Println("╠══════════════════════════════════════════════════════════╣")
+		fmt.Printf("║  Partition Duration : %-33.1f ms  ║\n", partDurationMs)
+		fmt.Printf("║  Recovery Time      : %-33.1f ms  ║\n", recoveryMs)
+	}
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
@@ -516,6 +586,10 @@ func report(st *stats, totalDur time.Duration, electionDurations []time.Duration
 		jsonReport["election_min_ms"] = float64(electionDurations[0].Microseconds()) / 1000.0
 		jsonReport["election_max_ms"] = float64(electionDurations[len(electionDurations)-1].Microseconds()) / 1000.0
 		jsonReport["election_mean_ms"] = float64(mean(electionDurations).Microseconds()) / 1000.0
+	}
+	if recoveryMs > 0 {
+		jsonReport["partition_recovery_ms"] = recoveryMs
+		jsonReport["partition_duration_ms"] = partDurationMs
 	}
 	data, _ := json.MarshalIndent(jsonReport, "", "  ")
 	filename := fmt.Sprintf("/app/results/benchmark_%s.json", timestamp)
