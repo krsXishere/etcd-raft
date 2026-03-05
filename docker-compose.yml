@@ -36,7 +36,6 @@ networks:
 
 volumes:
   prometheus-data:
-  benchmark-results:
 
 services:
   # ─────────────────────────────────────────────────────────
@@ -272,7 +271,7 @@ services:
       BURST_RATE: "${BENCHMARK_BURST_RATE:-500}"
       WARMUP: "${BENCHMARK_WARMUP:-15s}"
     volumes:
-      - benchmark-results:/app/results
+      - ./results:/app/results
     depends_on:
       node1:
         condition: service_healthy
