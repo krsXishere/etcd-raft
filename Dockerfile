@@ -22,7 +22,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o benchmark   cmd/benchmark/main.go
 FROM alpine:3.19
 
 # iproute2 provides the `tc` command for traffic control (netem)
-RUN apk add --no-cache iproute2 bash curl
+# iptables provides network partition simulation (Scenario 3)
+RUN apk add --no-cache iproute2 iptables bash curl
 
 WORKDIR /app
 
