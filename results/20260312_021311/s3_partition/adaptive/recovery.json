@@ -1,0 +1,67 @@
+[
+  {
+    "node_id": 1,
+    "port": 9201,
+    "recovery_ms": 100,
+    "partition_duration_ms": 30076,
+    "partition_status": {
+      "isolated": [],
+      "last_partition_ms": 30076,
+      "last_recovery_ms": 100,
+      "node_id": 1,
+      "partitioned": false,
+      "recovering": false,
+      "recovery_history_ms": [
+        100
+      ]
+    }
+  },
+  {
+    "node_id": 2,
+    "port": 9202,
+    "recovery_ms": 0,
+    "partition_duration_ms": 0,
+    "partition_status": {
+      "isolated": [],
+      "node_id": 2,
+      "partitioned": false,
+      "recovering": false
+    }
+  },
+  {
+    "node_id": 3,
+    "port": 9203,
+    "recovery_ms": 0,
+    "partition_duration_ms": 0,
+    "partition_status": {
+      "isolated": [],
+      "node_id": 3,
+      "partitioned": false,
+      "recovering": false
+    }
+  },
+  {
+    "node_id": 4,
+    "port": 9204,
+    "recovery_ms": 0,
+    "partition_duration_ms": 0,
+    "partition_status": {
+      "isolated": [],
+      "node_id": 4,
+      "partitioned": false,
+      "recovering": false
+    }
+  },
+  {
+    "node_id": 5,
+    "port": 9205,
+    "recovery_ms": 0,
+    "partition_duration_ms": 0,
+    "partition_status": {
+      "isolated": [],
+      "node_id": 5,
+      "partitioned": false,
+      "recovering": false
+    }
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "duration_s": 60.028401804,
+  "elections_observed": 0,
+  "elections_total": 0,
+  "failures": 0,
+  "latency_mean_ms": 40.477,
+  "latency_p50_ms": 38.087,
+  "latency_p95_ms": 43.81,
+  "latency_p99_ms": 246.183,
+  "partition_duration_ms": 41411,
+  "partition_recovery_ms": 100,
+  "successes": 4524,
+  "throughput": 75.36432528674356,
+  "timestamp": "20260305_190616",
+  "total_ops": 4524
+}

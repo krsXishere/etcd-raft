@@ -1,0 +1,59 @@
+{
+  "run_timestamp": "20260312_021311",
+  "scenarios": {
+    "s1_stable": {
+      "static": {
+        "throughput": 24.494113038662945,
+        "latency_p50_ms": 72.158,
+        "latency_p99_ms": 287.772,
+        "elections_total": 0
+      },
+      "adaptive": {
+        "throughput": 33.66932652369804,
+        "latency_p50_ms": 39.974,
+        "latency_p99_ms": 251.085,
+        "elections_total": 0
+      }
+    },
+    "s2_latency_spike": {
+      "static": {
+        "throughput": 25.33240908351353,
+        "latency_p50_ms": 89.564,
+        "latency_p99_ms": 1039.423,
+        "elections_total": 0,
+        "failures": 26
+      },
+      "adaptive": {
+        "throughput": 27.997588012922524,
+        "latency_p50_ms": 89.631,
+        "latency_p99_ms": 1164.23,
+        "elections_total": 0,
+        "failures": 6
+      }
+    },
+    "s3_partition": {
+      "static": {
+        "throughput": 38.577022865619604,
+        "elections_total": 0,
+        "partition_recovery_ms": 101,
+        "partition_duration_ms": 30076
+      },
+      "adaptive": {
+        "throughput": 35.48487579919314,
+        "elections_total": 0,
+        "partition_recovery_ms": 100,
+        "partition_duration_ms": 30076
+      }
+    },
+    "s4_overhead": {
+      "static": {
+        "overhead_percent": 0,
+        "verdict": "PASS"
+      },
+      "adaptive": {
+        "overhead_percent": 0,
+        "verdict": "PASS"
+      }
+    }
+  }
+}

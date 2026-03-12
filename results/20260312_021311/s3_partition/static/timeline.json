@@ -1,0 +1,27 @@
+{
+  "scenario": "s3_partition",
+  "mode": "static",
+  "total_duration": "90s",
+  "leader_node_id": 1,
+  "leader_port": 9201,
+  "isolated_peers": [4, 5],
+  "phases": [
+    {
+      "name": "normal",
+      "start_s": 0,
+      "end_s": 20
+    },
+    {
+      "name": "partitioned",
+      "start_s": 20,
+      "end_s": 50,
+      "partition_created_at": "2026-03-12T02:17:49+07:00"
+    },
+    {
+      "name": "recovery",
+      "start_s": 50,
+      "end_s": 90,
+      "partition_healed_at": "2026-03-12T02:18:19+07:00"
+    }
+  ]
+}

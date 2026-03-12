@@ -1,0 +1,30 @@
+{
+  "scenario": "s2_latency_spike",
+  "mode": "adaptive",
+  "total_duration": "120s",
+  "phases": [
+    {
+      "name": "baseline",
+      "start_s": 0,
+      "end_s": 30,
+      "tc": "normal"
+    },
+    {
+      "name": "spike",
+      "start_s": 30,
+      "end_s": 75,
+      "spike_injected_at": "2026-03-12T02:22:39+07:00",
+      "tc_hub": {"delay":"75ms","jitter":"25ms","correlation":"25%","loss":"1%","duplicate":"0%","reorder":"0%"},
+      "tc_remote": {"delay":"150ms","jitter":"50ms","correlation":"25%","loss":"2%","duplicate":"0%","reorder":"0%"}
+    },
+    {
+      "name": "recovery",
+      "start_s": 75,
+      "end_s": 120,
+      "restored_at": "2026-03-12T02:23:25+07:00",
+      "tc_hub": {"delay":"2ms","jitter":"0.05ms","correlation":"90%","loss":"0%","duplicate":"0%","reorder":"0%"},
+      "tc_node4": {"delay":"9.8ms","jitter":"0.05ms","correlation":"90%","loss":"0%","duplicate":"0%","reorder":"0%"},
+      "tc_node5": {"delay":"59.75ms","jitter":"0.05ms","correlation":"90%","loss":"0%","duplicate":"0%","reorder":"0%"}
+    }
+  ]
+}

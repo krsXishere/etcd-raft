@@ -1,0 +1,15 @@
+{
+  "scenario": "s4_overhead",
+  "mode": "static",
+  "cpu_seconds_before": 21.27,
+  "cpu_seconds_after": 32.82,
+  "cpu_seconds_delta": 11.55,
+  "tuning_seconds_before": 0,
+  "tuning_seconds_after": 0,
+  "tuning_seconds_delta": 0,
+  "overhead_percent": 0,
+  "threshold_percent": 5,
+  "verdict": "PASS",
+  "memory_alloc_before_bytes": 3.00696E+6,
+  "memory_alloc_after_bytes": 3317536
+}

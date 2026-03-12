@@ -1,0 +1,19 @@
+{
+  "duration_s": 90.079527705,
+  "election_max_ms": 14600.769,
+  "election_mean_ms": 14600.769,
+  "election_min_ms": 14600.769,
+  "elections_observed": 1,
+  "elections_total": 0,
+  "failures": 12,
+  "latency_mean_ms": 154.607,
+  "latency_p50_ms": 89.434,
+  "latency_p95_ms": 90.876,
+  "latency_p99_ms": 93.467,
+  "partition_duration_ms": 30076,
+  "partition_recovery_ms": 101,
+  "successes": 3475,
+  "throughput": 38.577022865619604,
+  "timestamp": "20260311_191906",
+  "total_ops": 3487
+}
