@@ -274,6 +274,19 @@ run_benchmark() {
     else
         warn "No benchmark JSON found in results/"
     fi
+
+    # Find and copy the corresponding timeline JSON
+    local timeline
+    if [[ -n "$latest" ]]; then
+        # Extract timestamp from benchmark filename (e.g., benchmark_20260312_021311.json)
+        local timestamp
+        timestamp=$(basename "$latest" | sed 's/benchmark_\(.*\)\.json/\1/')
+        timeline="$PROJECT_DIR/results/timeline_${timestamp}.json"
+        if [[ -f "$timeline" ]]; then
+            cp "$timeline" "$out_dir/timeline.json"
+            ok "Timeline → $out_dir/timeline.json"
+        fi
+    fi
 }
 
 # run_benchmark_bg <out_dir> <duration> <pattern> <rate>
@@ -319,8 +332,18 @@ wait_benchmark() {
     if [[ -n "$latest" && -f "$latest" ]]; then
         cp "$latest" "$BG_BENCH_DIR/benchmark.json"
         ok "Results → $BG_BENCH_DIR/benchmark.json"
+
+        # Copy timeline data as well
+        local timeline
+        local timestamp
+        timestamp=$(basename "$latest" | sed 's/benchmark_\(.*\)\.json/\1/')
+        timeline="$PROJECT_DIR/results/timeline_${timestamp}.json"
+        if [[ -f "$timeline" ]]; then
+            cp "$timeline" "$BG_BENCH_DIR/timeline.json"
+            ok "Timeline → $BG_BENCH_DIR/timeline.json"
+        fi
     else
-        warn "No benchmark JSON found"
+        warn "No benchmark JSON found in background results/"
     fi
 
     BG_BENCH_PID=""

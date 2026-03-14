@@ -49,26 +49,84 @@ type config struct {
 // ─────────────────────────────────────────────────────────────────────
 
 type result struct {
-	latency time.Duration
-	success bool
+	latency   time.Duration
+	success   bool
+	timestamp time.Time
 }
 
 type stats struct {
-	mu        sync.Mutex
-	latencies []time.Duration
-	successes int64
-	failures  int64
+	mu            sync.Mutex
+	latencies     []time.Duration
+	results       []result // track all results with timestamps
+	successes     int64
+	failures      int64
+	lastSnapshotS int64 // track successes at last snapshot
+	lastSnapshotF int64 // track failures at last snapshot
 }
 
 func (s *stats) record(r result) {
 	if r.success {
 		atomic.AddInt64(&s.successes, 1)
-		s.mu.Lock()
-		s.latencies = append(s.latencies, r.latency)
-		s.mu.Unlock()
 	} else {
 		atomic.AddInt64(&s.failures, 1)
 	}
+	s.mu.Lock()
+	s.results = append(s.results, r)
+	if r.success {
+		s.latencies = append(s.latencies, r.latency)
+	}
+	s.mu.Unlock()
+}
+
+func (s *stats) getResultsInWindow(start, end time.Time) []result {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var filtered []result
+	for _, r := range s.results {
+		if !r.timestamp.Before(start) && r.timestamp.Before(end) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Per-second timeline metrics
+// ─────────────────────────────────────────────────────────────────────
+
+type timelineEntry struct {
+	Timestamp              int64   `json:"timestamp_unix"`
+	ElapsedSeconds         float64 `json:"elapsed_s"`
+	SuccessesPerSecond     int64   `json:"successes_ps"`
+	FailuresPerSecond      int64   `json:"failures_ps"`
+	ThroughputOpsPerSecond float64 `json:"throughput_ops_s"`
+	LatencyP50Ms           float64 `json:"latency_p50_ms"`
+	LatencyP95Ms           float64 `json:"latency_p95_ms"`
+	LatencyP99Ms           float64 `json:"latency_p99_ms"`
+	LatencyMeanMs          float64 `json:"latency_mean_ms"`
+	LatencyMinMs           float64 `json:"latency_min_ms"`
+	LatencyMaxMs           float64 `json:"latency_max_ms"`
+	CumulativeSuccesses    int64   `json:"cumulative_successes"`
+	CumulativeFailures     int64   `json:"cumulative_failures"`
+}
+
+type timeline struct {
+	mu      sync.Mutex
+	entries []timelineEntry
+}
+
+func (t *timeline) record(entry timelineEntry) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.entries = append(t.entries, entry)
+}
+
+func (t *timeline) getEntries() []timelineEntry {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make([]timelineEntry, len(t.entries))
+	copy(result, t.entries)
+	return result
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -358,10 +416,11 @@ func main() {
 	eo := newElectionObserver(cfg.Targets)
 	eo.start()
 
-	// Run benchmark
+	// Run benchmark with timeline collection
 	st := &stats{}
+	tl := &timeline{}
 	start := time.Now()
-	runBenchmark(cfg, st)
+	runBenchmarkWithTimeline(cfg, st, tl, start)
 	totalDur := time.Since(start)
 
 	// Stop election observer
@@ -378,7 +437,7 @@ func main() {
 	}
 
 	// Report
-	report(st, totalDur, electionDurations, electionsBefore, electionsAfter, recoveryMs, partDurationMs)
+	report(st, totalDur, electionDurations, electionsBefore, electionsAfter, recoveryMs, partDurationMs, tl)
 }
 
 func parseConfig() config {
@@ -478,13 +537,114 @@ func runBenchmark(cfg config, st *stats) {
 
 			cmd := fmt.Sprintf("SET key_%d=%d", rand.Intn(10000), time.Now().UnixNano())
 			latency, err := propose(t, cmd)
-			st.record(result{latency: latency, success: err == nil})
+			st.record(result{latency: latency, success: err == nil, timestamp: time.Now()})
 		}(target)
 
 		time.Sleep(interval)
 	}
 
 	wg.Wait()
+}
+
+func runBenchmarkWithTimeline(cfg config, st *stats, tl *timeline, benchmarkStart time.Time) {
+	start := time.Now()
+	deadline := start.Add(cfg.Duration)
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 200) // concurrency limiter
+
+	// Start timeline collector goroutine (collects metrics every second)
+	stopTimeline := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopTimeline:
+				return
+			case <-ticker.C:
+				collectTimelineSnapshot(st, tl, benchmarkStart)
+			}
+		}
+	}()
+
+	// Run benchmark load generator
+	for time.Now().Before(deadline) {
+		currentRate := cfg.Rate
+
+		if cfg.Pattern == "bursty" {
+			elapsed := time.Since(start)
+			cycleLen := cfg.BurstDuration + cfg.CalmDuration
+			phase := elapsed % cycleLen
+			if phase < cfg.BurstDuration {
+				currentRate = cfg.BurstRate
+			}
+		}
+
+		if currentRate <= 0 {
+			currentRate = 1
+		}
+		interval := time.Second / time.Duration(currentRate)
+
+		// Pick a target; prefer leader but fall back to random node.
+		target := pickTarget(cfg.Targets)
+
+		sem <- struct{}{} // acquire
+		wg.Add(1)
+		go func(t string) {
+			defer wg.Done()
+			defer func() { <-sem }() // release
+
+			cmd := fmt.Sprintf("SET key_%d=%d", rand.Intn(10000), time.Now().UnixNano())
+			latency, err := propose(t, cmd)
+			st.record(result{latency: latency, success: err == nil, timestamp: time.Now()})
+		}(target)
+
+		time.Sleep(interval)
+	}
+
+	wg.Wait()
+	close(stopTimeline)
+	// Collect final snapshot
+	collectTimelineSnapshot(st, tl, benchmarkStart)
+}
+
+func collectTimelineSnapshot(st *stats, tl *timeline, benchmarkStart time.Time) {
+	successes := atomic.LoadInt64(&st.successes)
+	failures := atomic.LoadInt64(&st.failures)
+	now := time.Now()
+	elapsed := now.Sub(benchmarkStart)
+	elapsedSec := elapsed.Seconds()
+
+	// Get all latencies (cumulative) for overall statistics
+	st.mu.Lock()
+	allLatencies := make([]time.Duration, len(st.latencies))
+	copy(allLatencies, st.latencies)
+	st.mu.Unlock()
+
+	sort.Slice(allLatencies, func(i, j int) bool { return allLatencies[i] < allLatencies[j] })
+
+	entry := timelineEntry{
+		Timestamp:           now.Unix(),
+		ElapsedSeconds:      elapsedSec,
+		CumulativeSuccesses: successes,
+		CumulativeFailures:  failures,
+	}
+
+	if elapsedSec > 0 {
+		entry.ThroughputOpsPerSecond = float64(successes) / elapsedSec
+	}
+
+	if len(allLatencies) > 0 {
+		entry.LatencyP50Ms = float64(percentile(allLatencies, 50).Microseconds()) / 1000.0
+		entry.LatencyP95Ms = float64(percentile(allLatencies, 95).Microseconds()) / 1000.0
+		entry.LatencyP99Ms = float64(percentile(allLatencies, 99).Microseconds()) / 1000.0
+		entry.LatencyMeanMs = float64(mean(allLatencies).Microseconds()) / 1000.0
+		entry.LatencyMinMs = float64(allLatencies[0].Microseconds()) / 1000.0
+		entry.LatencyMaxMs = float64(allLatencies[len(allLatencies)-1].Microseconds()) / 1000.0
+	}
+
+	tl.record(entry)
 }
 
 func pickTarget(targets []string) string {
@@ -500,7 +660,7 @@ func pickTarget(targets []string) string {
 // Report
 // ─────────────────────────────────────────────────────────────────────
 
-func report(st *stats, totalDur time.Duration, electionDurations []time.Duration, electionsBefore, electionsAfter int64, recoveryMs, partDurationMs float64) {
+func report(st *stats, totalDur time.Duration, electionDurations []time.Duration, electionsBefore, electionsAfter int64, recoveryMs, partDurationMs float64, tl *timeline) {
 	st.mu.Lock()
 	latencies := make([]time.Duration, len(st.latencies))
 	copy(latencies, st.latencies)
@@ -595,6 +755,17 @@ func report(st *stats, totalDur time.Duration, electionDurations []time.Duration
 	filename := fmt.Sprintf("/app/results/benchmark_%s.json", timestamp)
 	_ = os.WriteFile(filename, data, 0644)
 	fmt.Printf("JSON results written to %s\n", filename)
+
+	// Write timeline data
+	timelineData := map[string]interface{}{
+		"timestamp":  timestamp,
+		"duration_s": totalDur.Seconds(),
+		"entries":    tl.getEntries(),
+	}
+	timelineJSON, _ := json.MarshalIndent(timelineData, "", "  ")
+	timelineFilename := fmt.Sprintf("/app/results/timeline_%s.json", timestamp)
+	_ = os.WriteFile(timelineFilename, timelineJSON, 0644)
+	fmt.Printf("Timeline data written to %s\n", timelineFilename)
 }
 
 func percentile(sorted []time.Duration, p float64) time.Duration {
