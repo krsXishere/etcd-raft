@@ -129,7 +129,7 @@ func getStatus(target string) (*statusResponse, error) {
 	return &sr, nil
 }
 
-// getLeaderElectionCount queries Prometheus /metrics for raft_election_leader_elections_total
+// getLeaderElectionCount queries Prometheus /metrics for raft_state_leader_elections_total
 func getLeaderElectionCount(target string) int64 {
 	resp, err := httpClient.Get(fmt.Sprintf("http://%s/metrics", target))
 	if err != nil {
@@ -138,10 +138,10 @@ func getLeaderElectionCount(target string) int64 {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 
-	// Parse Prometheus text format for raft_election_leader_elections_total
+	// Parse Prometheus text format for raft_state_leader_elections_total
 	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "raft_election_leader_elections_total{") {
-			// Format: raft_election_leader_elections_total{node_id="1"} 3
+		if strings.HasPrefix(line, "raft_state_leader_elections_total{") {
+			// Format: raft_state_leader_elections_total{node_id="1"} 3
 			parts := strings.Split(line, " ")
 			if len(parts) >= 2 {
 				var count int64
