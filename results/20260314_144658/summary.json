@@ -1,0 +1,59 @@
+{
+  "run_timestamp": "20260314_144658",
+  "scenarios": {
+    "s1_stable": {
+      "static": {
+        "throughput": 0,
+        "latency_p50_ms": 0,
+        "latency_p99_ms": 0,
+        "elections_total": 0
+      },
+      "adaptive": {
+        "throughput": 0,
+        "latency_p50_ms": 0,
+        "latency_p99_ms": 0,
+        "elections_total": 0
+      }
+    },
+    "s2_latency_spike": {
+      "static": {
+        "throughput": 17.10911522432463,
+        "latency_p50_ms": 116.876,
+        "latency_p99_ms": 1263.624,
+        "elections_total": 0,
+        "failures": 0
+      },
+      "adaptive": {
+        "throughput": 26.45588863400811,
+        "latency_p50_ms": 85.504,
+        "latency_p99_ms": 925.709,
+        "elections_total": 0,
+        "failures": 0
+      }
+    },
+    "s3_partition": {
+      "static": {
+        "throughput": 0,
+        "elections_total": 0,
+        "partition_recovery_ms": 0,
+        "partition_duration_ms": 0
+      },
+      "adaptive": {
+        "throughput": 0,
+        "elections_total": 0,
+        "partition_recovery_ms": 0,
+        "partition_duration_ms": 0
+      }
+    },
+    "s4_overhead": {
+      "static": {
+        "overhead_percent": 0,
+        "verdict": "0"
+      },
+      "adaptive": {
+        "overhead_percent": 0,
+        "verdict": "0"
+      }
+    }
+  }
+}

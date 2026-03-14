@@ -1,0 +1,14 @@
+{
+  "duration_s": 120.111412721,
+  "elections_observed": 0,
+  "elections_total": 0,
+  "failures": 0,
+  "latency_mean_ms": 164.591,
+  "latency_p50_ms": 116.876,
+  "latency_p95_ms": 997.216,
+  "latency_p99_ms": 1263.624,
+  "successes": 2055,
+  "throughput": 17.10911522432463,
+  "timestamp": "20260314_144937",
+  "total_ops": 2055
+}
