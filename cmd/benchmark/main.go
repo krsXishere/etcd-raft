@@ -546,6 +546,102 @@ func runBenchmark(cfg config, st *stats) {
 	wg.Wait()
 }
 
+func runBenchmarkWithTimeline(cfg config, st *stats, tl *timeline, start time.Time) {
+	deadline := start.Add(cfg.Duration)
+	lastSecond := int64(0)
+	secondStart := start
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 200) // concurrency limiter
+
+	for time.Now().Before(deadline) {
+		currentRate := cfg.Rate
+
+		if cfg.Pattern == "bursty" {
+			elapsed := time.Since(start)
+			cycleLen := cfg.BurstDuration + cfg.CalmDuration
+			phase := elapsed % cycleLen
+			if phase < cfg.BurstDuration {
+				currentRate = cfg.BurstRate
+			}
+		}
+
+		if currentRate <= 0 {
+			currentRate = 1
+		}
+		interval := time.Second / time.Duration(currentRate)
+
+		// Pick a target; prefer leader but fall back to random node.
+		target := pickTarget(cfg.Targets)
+
+		sem <- struct{}{} // acquire
+		wg.Add(1)
+		go func(t string) {
+			defer wg.Done()
+			defer func() { <-sem }() // release
+
+			cmd := fmt.Sprintf("SET key_%d=%d", rand.Intn(10000), time.Now().UnixNano())
+			latency, err := propose(t, cmd)
+			st.record(result{latency: latency, success: err == nil, timestamp: time.Now()})
+		}(target)
+
+		// Record timeline every second
+		currentSecond := int64(time.Since(start).Seconds())
+		if currentSecond > lastSecond {
+			lastSecond = currentSecond
+			secondEnd := start.Add(time.Duration(currentSecond) * time.Second)
+			results := st.getResultsInWindow(secondStart, secondEnd)
+
+			successes := int64(0)
+			failures := int64(0)
+			var latencies []time.Duration
+
+			for _, r := range results {
+				if r.success {
+					successes++
+					latencies = append(latencies, r.latency)
+				} else {
+					failures++
+				}
+			}
+
+			var p50, p95, p99, meanL, minL, maxL float64
+			if len(latencies) > 0 {
+				sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+				p50 = float64(percentile(latencies, 50).Microseconds()) / 1000.0
+				p95 = float64(percentile(latencies, 95).Microseconds()) / 1000.0
+				p99 = float64(percentile(latencies, 99).Microseconds()) / 1000.0
+				meanL = float64(mean(latencies).Microseconds()) / 1000.0
+				minL = float64(latencies[0].Microseconds()) / 1000.0
+				maxL = float64(latencies[len(latencies)-1].Microseconds()) / 1000.0
+			}
+
+			entry := timelineEntry{
+				Timestamp:              time.Now().Unix(),
+				ElapsedSeconds:         float64(currentSecond),
+				SuccessesPerSecond:     successes,
+				FailuresPerSecond:      failures,
+				ThroughputOpsPerSecond: float64(successes + failures),
+				LatencyP50Ms:           p50,
+				LatencyP95Ms:           p95,
+				LatencyP99Ms:           p99,
+				LatencyMeanMs:          meanL,
+				LatencyMinMs:           minL,
+				LatencyMaxMs:           maxL,
+				CumulativeSuccesses:    atomic.LoadInt64(&st.successes),
+				CumulativeFailures:     atomic.LoadInt64(&st.failures),
+			}
+			tl.record(entry)
+
+			secondStart = secondEnd
+		}
+
+		time.Sleep(interval)
+	}
+
+	wg.Wait()
+}
+
 func pickTarget(targets []string) string {
 	// Try to find the leader first (cached attempt).
 	leader := discoverLeader(targets)
