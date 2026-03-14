@@ -205,6 +205,59 @@ collect_metrics_snapshot() {
 EOF
 }
 
+collect_latency_metrics() {
+    # Collects latency percentiles (p50, p95, p99) from Prometheus every second
+    # during a benchmark run. Outputs JSON array with per-second samples.
+    # Usage: collect_latency_metrics <duration_seconds> <output_json_file>
+    local duration=$1 outfile=$2
+    local start_time end_time elapsed seconds_collected
+    local prometheus_url="http://localhost:9090"
+
+    start_time=$(date +%s)
+    end_time=$(( start_time + duration ))
+    seconds_collected=0
+
+    local json_samples='[]'
+
+    log "Collecting latency metrics for ${duration}s → $outfile"
+
+    while (( $(date +%s) < end_time )); do
+        local timestamp current_time p50 p95 p99
+        current_time=$(date +%s)
+        elapsed=$(( current_time - start_time ))
+        timestamp=$(date -Iseconds)
+
+        # Query Prometheus for latest latency percentiles
+        # Using the pre-aggregated rules or direct metric queries
+        p50=$(curl -sf "${prometheus_url}/api/v1/query?query=raft:consensus:proposal_latency_p50_seconds" 2>/dev/null \
+            | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0")
+        p95=$(curl -sf "${prometheus_url}/api/v1/query?query=raft:consensus:proposal_latency_p95_seconds" 2>/dev/null \
+            | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0")
+        p99=$(curl -sf "${prometheus_url}/api/v1/query?query=raft:consensus:proposal_latency_p99_seconds" 2>/dev/null \
+            | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0")
+
+        # Convert to milliseconds
+        p50_ms=$(echo "scale=4; $p50 * 1000" | bc 2>/dev/null || echo "0")
+        p95_ms=$(echo "scale=4; $p95 * 1000" | bc 2>/dev/null || echo "0")
+        p99_ms=$(echo "scale=4; $p99 * 1000" | bc 2>/dev/null || echo "0")
+
+        # Append sample to JSON array
+        json_samples=$(echo "$json_samples" | jq \
+            ". += [{\"elapsed_seconds\": $elapsed, \"timestamp\": \"$timestamp\", \"p50_ms\": $p50_ms, \"p95_ms\": $p95_ms, \"p99_ms\": $p99_ms}]" \
+            2>/dev/null || echo "$json_samples")
+
+        printf "\r  ${DIM}Collected: %d/%d seconds (p50=%.2fms, p95=%.2fms, p99=%.2fms)${NC}  " \
+            "$elapsed" "$duration" "$p50_ms" "$p95_ms" "$p99_ms"
+
+        sleep 1
+    done
+    echo
+
+    # Write final JSON to file
+    echo "$json_samples" | jq . > "$outfile" 2>/dev/null || true
+    ok "Latency metrics → $outfile"
+}
+
 ###############################################################################
 # CLUSTER LIFECYCLE
 ###############################################################################
@@ -365,7 +418,15 @@ run_s1() {
     header "SCENARIO 1 — Stable Network [$mode]"
     divider
 
-    run_benchmark "$out_dir" "$S1_DURATION" "steady" "$BENCH_RATE"
+    # Start benchmark in background to collect metrics during run
+    run_benchmark_bg "$out_dir" "$S1_DURATION" "steady" "$BENCH_RATE"
+
+    # Collect per-second latency metrics while benchmark runs
+    local duration_seconds=${S1_DURATION%s}
+    collect_latency_metrics "$duration_seconds" "$out_dir/latency_timeseries.json"
+
+    # Wait for benchmark to finish
+    wait_benchmark
 
     ok "Scenario 1 [$mode] complete → $out_dir/"
 }
@@ -393,7 +454,28 @@ run_s2() {
 
     # Phase 1: Baseline
     log "[Phase 1] Baseline — normal latency for ${S2_SPIKE_AT}s"
-    sleep "$S2_SPIKE_AT"
+
+    # Collect phase 1 metrics
+    {
+        echo '{'
+        echo '  "phase": "baseline",'
+        echo '  "duration_seconds": '$S2_SPIKE_AT','
+        echo '  "samples": ['
+        local first=true
+        for i in $(seq 1 $S2_SPIKE_AT); do
+            $first || echo ','
+            first=false
+            local timestamp p50_ms p95_ms p99_ms
+            timestamp=$(date -Iseconds)
+            p50_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p50_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p95_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p95_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p99_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p99_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            echo '    {"second": '$i', "timestamp": "'$timestamp'", "p50_ms": '$p50_ms', "p95_ms": '$p95_ms', "p99_ms": '$p99_ms'}'
+            sleep 1
+        done
+        echo '  ]'
+        echo '}'
+    } | jq . > "$out_dir/phase1_baseline.json" 2>/dev/null || true
 
     # Phase 2: Inject spike
     local spike_start
@@ -403,13 +485,60 @@ run_s2() {
 
     local spike_hold=$(( S2_RESTORE_AT - S2_SPIKE_AT ))
     log "[Phase 2] Spike active for ${spike_hold}s"
-    sleep "$spike_hold"
+
+    # Collect phase 2 metrics
+    {
+        echo '{'
+        echo '  "phase": "spike",'
+        echo '  "duration_seconds": '$spike_hold','
+        echo '  "spike_injected_at": "'$spike_start'",'
+        echo '  "samples": ['
+        local first=true
+        for i in $(seq 1 $spike_hold); do
+            $first || echo ','
+            first=false
+            local timestamp p50_ms p95_ms p99_ms
+            timestamp=$(date -Iseconds)
+            p50_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p50_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p95_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p95_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p99_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p99_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            echo '    {"second": '$i', "timestamp": "'$timestamp'", "p50_ms": '$p50_ms', "p95_ms": '$p95_ms', "p99_ms": '$p99_ms'}'
+            sleep 1
+        done
+        echo '  ]'
+        echo '}'
+    } | jq . > "$out_dir/phase2_spike.json" 2>/dev/null || true
 
     # Phase 3: Restore
     local restore_time
     restore_time=$(date -Iseconds)
     log "[Phase 3] Restoring normal latency"
     tc_restore_all
+
+    local recovery_duration=$(( ${S2_DURATION%s} - S2_RESTORE_AT ))
+
+    # Collect phase 3 metrics
+    {
+        echo '{'
+        echo '  "phase": "recovery",'
+        echo '  "duration_seconds": '$recovery_duration','
+        echo '  "restored_at": "'$restore_time'",'
+        echo '  "samples": ['
+        local first=true
+        for i in $(seq 1 $recovery_duration); do
+            $first || echo ','
+            first=false
+            local timestamp p50_ms p95_ms p99_ms
+            timestamp=$(date -Iseconds)
+            p50_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p50_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p95_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p95_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p99_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p99_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            echo '    {"second": '$i', "timestamp": "'$timestamp'", "p50_ms": '$p50_ms', "p95_ms": '$p95_ms', "p99_ms": '$p99_ms'}'
+            sleep 1
+        done
+        echo '  ]'
+        echo '}'
+    } | jq . > "$out_dir/phase3_recovery.json" 2>/dev/null || true
 
     # Wait for benchmark to finish
     wait_benchmark
@@ -448,7 +577,7 @@ run_s2() {
 }
 EOF
 
-    ok "Scenario 2 [$mode] complete → $out_dir/"
+    ok "Scenario 2 [$mode] complete → $out_dir/ (latency phases: phase1_baseline.json, phase2_spike.json, phase3_recovery.json)"
 }
 
 ###############################################################################
@@ -474,7 +603,28 @@ run_s3() {
 
     # Phase 1: Normal operation
     log "[Phase 1] Normal operation for ${S3_PARTITION_AT}s"
-    sleep "$S3_PARTITION_AT"
+
+    # Collect phase 1 metrics
+    {
+        echo '{'
+        echo '  "phase": "normal",'
+        echo '  "duration_seconds": '$S3_PARTITION_AT','
+        echo '  "samples": ['
+        local first=true
+        for i in $(seq 1 $S3_PARTITION_AT); do
+            $first || echo ','
+            first=false
+            local timestamp p50_ms p95_ms p99_ms
+            timestamp=$(date -Iseconds)
+            p50_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p50_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p95_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p95_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p99_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p99_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            echo '    {"second": '$i', "timestamp": "'$timestamp'", "p50_ms": '$p50_ms', "p95_ms": '$p95_ms', "p99_ms": '$p99_ms'}'
+            sleep 1
+        done
+        echo '  ]'
+        echo '}'
+    } | jq . > "$out_dir/phase1_normal.json" 2>/dev/null || true
 
     # Find leader
     local leader_info leader_port leader_id
@@ -501,7 +651,29 @@ run_s3() {
 
     local hold_time=$(( S3_HEAL_AT - S3_PARTITION_AT ))
     log "[Phase 2] Partition active for ${hold_time}s"
-    sleep "$hold_time"
+
+    # Collect phase 2 metrics
+    {
+        echo '{'
+        echo '  "phase": "partitioned",'
+        echo '  "duration_seconds": '$hold_time','
+        echo '  "partition_created_at": "'$partition_time'",'
+        echo '  "samples": ['
+        local first=true
+        for i in $(seq 1 $hold_time); do
+            $first || echo ','
+            first=false
+            local timestamp p50_ms p95_ms p99_ms
+            timestamp=$(date -Iseconds)
+            p50_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p50_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p95_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p95_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p99_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p99_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            echo '    {"second": '$i', "timestamp": "'$timestamp'", "p50_ms": '$p50_ms', "p95_ms": '$p95_ms', "p99_ms": '$p99_ms'}'
+            sleep 1
+        done
+        echo '  ]'
+        echo '}'
+    } | jq . > "$out_dir/phase2_partitioned.json" 2>/dev/null || true
 
     # Phase 3: Heal
     local heal_time
@@ -510,6 +682,31 @@ run_s3() {
     local heal_resp
     heal_resp=$(curl -sf -X DELETE "http://localhost:$leader_port/partition" 2>/dev/null) || heal_resp='{}'
     echo "$heal_resp" | jq . 2>/dev/null || echo "$heal_resp"
+
+    local recovery_duration=$(( ${S3_DURATION%s} - S3_HEAL_AT ))
+
+    # Collect phase 3 metrics
+    {
+        echo '{'
+        echo '  "phase": "recovery",'
+        echo '  "duration_seconds": '$recovery_duration','
+        echo '  "partition_healed_at": "'$heal_time'",'
+        echo '  "samples": ['
+        local first=true
+        for i in $(seq 1 $recovery_duration); do
+            $first || echo ','
+            first=false
+            local timestamp p50_ms p95_ms p99_ms
+            timestamp=$(date -Iseconds)
+            p50_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p50_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p95_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p95_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            p99_ms=$(curl -sf "http://localhost:9090/api/v1/query?query=raft:consensus:proposal_latency_p99_seconds" 2>/dev/null | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0" | xargs -I {} echo "scale=4; {} * 1000" | bc 2>/dev/null || echo "0")
+            echo '    {"second": '$i', "timestamp": "'$timestamp'", "p50_ms": '$p50_ms', "p95_ms": '$p95_ms', "p99_ms": '$p99_ms'}'
+            sleep 1
+        done
+        echo '  ]'
+        echo '}'
+    } | jq . > "$out_dir/phase3_recovery.json" 2>/dev/null || true
 
     # Wait for benchmark to finish (it auto-collects partition metrics)
     wait_benchmark
@@ -574,7 +771,7 @@ ITEM
 }
 EOF
 
-    ok "Scenario 3 [$mode] complete → $out_dir/"
+    ok "Scenario 3 [$mode] complete → $out_dir/ (latency phases: phase1_normal.json, phase2_partitioned.json, phase3_recovery.json)"
 }
 
 ###############################################################################
@@ -583,7 +780,7 @@ EOF
 # Goal : Show PID controller overhead < 5% CPU.
 # Method:
 #   1. Snapshot CPU/mem from /metrics (before)
-#   2. Run benchmark workload
+#   2. Run benchmark workload + collect latency timeseries
 #   3. Snapshot CPU/mem from /metrics (after)
 #   4. Compute: overhead% = tuning_cpu_delta / total_cpu_delta × 100
 ###############################################################################
@@ -606,8 +803,15 @@ run_s4() {
     log "Collecting pre-benchmark metrics snapshot"
     collect_metrics_snapshot "$leader_port" "$out_dir/before.json"
 
-    # Run benchmark
-    run_benchmark "$out_dir" "$S4_DURATION" "steady" "$BENCH_RATE"
+    # Run benchmark in background to collect latency metrics
+    run_benchmark_bg "$out_dir" "$S4_DURATION" "steady" "$BENCH_RATE"
+
+    # Collect per-second latency metrics while benchmark runs
+    local duration_seconds=${S4_DURATION%s}
+    collect_latency_metrics "$duration_seconds" "$out_dir/latency_timeseries.json"
+
+    # Wait for benchmark to finish
+    wait_benchmark
 
     # Snapshot AFTER (re-find leader in case it changed)
     leader_info=$(find_leader) || true
@@ -672,7 +876,7 @@ EOF
         divider
     fi
 
-    ok "Scenario 4 [$mode] complete → $out_dir/"
+    ok "Scenario 4 [$mode] complete → $out_dir/ (latency timeseries: latency_timeseries.json)"
 }
 
 ###############################################################################
